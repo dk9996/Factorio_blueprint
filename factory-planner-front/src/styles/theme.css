@@ -1,0 +1,16 @@
+:root {
+  --bg-void: #161514;
+  --bg-canvas: #232220;
+  --bg-panel: #1c1b19;
+  --bg-panel-raised: #2a2926;
+  --line: #3a3833;
+  --line-soft: #2e2c28;
+  --text: #e4ddc9;
+  --text-dim: #8f897a;
+  --accent: #e8890c;
+  --accent-dim: #a85f08;
+  --ok: #5fb85a;
+  --warn: #e0b23c;
+  --bad: #d1453d;
+  --blue: #4fa3d1;
+}
