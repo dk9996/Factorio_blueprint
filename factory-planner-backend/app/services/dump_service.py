@@ -6,40 +6,39 @@ from app.config import settings
 DUMP_CACHE_PATH = Path("data/cache/data-raw-dump.json")
 CATALOG_CACHE_PATH = Path("data/cache/entity_catalog.json")
 
-ENTITY_TYPES = [
-    "assembling-machine",
-    "furnace",
-    "transport-belt",
-    "underground-belt",
-    "splitter",
-    "inserter",
-    "container",
-    "logistic-container",
-    "storage-tank",
-    "pipe",
-    "pipe-to-ground",
-    "pump",
-    "boiler",
-    "generator",
-    "reactor",
-    "solar-panel",
-    "accumulator",
-    "electric-pole",
-    "mining-drill",
-    "lab",
-    "rocket-silo",
-    "roboport",
-    "wall",
-    "gate",
-    "radar",
-    "beacon",
-]
+# Секции dump, которые заведомо НЕ являются физическими сущностями на карте
+# (даже если в них случайно завалялось поле collision_box) — исключаем,
+# чтобы не тащить в каталог мусор вроде декоративных частиц/GUI-стилей.
+NON_ENTITY_SECTIONS = {
+    "font", "gui-style", "utility-constants", "utility-sounds", "sprite",
+    "utility-sprites", "god-controller", "editor-controller",
+    "spectator-controller", "remote-controller", "noise-function",
+    "noise-expression", "mouse-cursor", "virtual-signal", "item",
+    "recipe", "quality", "fluid", "tile", "space-location",
+    "asteroid-chunk", "recipe-category", "burner-usage", "damage-type",
+    "ambient-sound", "collision-layer", "item-group", "item-subgroup",
+    "technology", "achievement", "equipment", "equipment-category",
+    "equipment-grid", "shortcut", "custom-input", "font-family",
+    "sound", "animation", "particle", "trigger-target-type",
+    "autoplace-control", "map-gen-presets", "module-category",
+    "ammo-category", "fuel-category", "trivial-smoke", "explosion",
+    "smoke", "smoke-with-trigger", "sticker", "flame-thrower-explosion",
+    "artillery-flare", "beam", "corpse", "particle-source",
+    "projectile", "stream", "fire", "resource-category",
+    "equipment-category", "unit-spawner",  # unit-spawner (биттеры) — оставим?
+}
+
+# Точечные категории, которые заведомо оставляем, даже если бы попали
+# под фильтр "тип начинается с decorative/optimized" и т.п.
+FORCE_INCLUDE_TYPES = {
+    "unit-spawner",  # гнёзда биттеров — не строишь их, но пусть будут видны
+}
 
 
 def run_game_dump() -> Path:
-    exe_path = settings.factorio_game_path / "bin" / "x64" / "factorio.exe"
+    exe_path = settings.factorio_executable
     if not exe_path.exists():
-        raise FileNotFoundError(f"Factorio.exe не найден: {exe_path}")
+        raise FileNotFoundError(f"Factorio не найден: {exe_path}")
 
     result = subprocess.run(
         [
@@ -69,10 +68,8 @@ def _extract_icon_filename(prototype: dict) -> str | None:
     icon_path = prototype.get("icon")
     if not icon_path and "icons" in prototype and prototype["icons"]:
         icon_path = prototype["icons"][0].get("icon")
-
     if not icon_path:
         return None
-
     return icon_path.rsplit("/", 1)[-1]
 
 
@@ -80,7 +77,6 @@ def _collision_box_to_size(prototype: dict) -> tuple[int, int]:
     box = prototype.get("collision_box")
     if not box:
         return (1, 1)
-
     (x1, y1), (x2, y2) = box
     width = max(1, round(x2 - x1))
     height = max(1, round(y2 - y1))
@@ -89,30 +85,28 @@ def _collision_box_to_size(prototype: dict) -> tuple[int, int]:
 
 class CategoryResolver:
     """
-    Строит реальные категории игры (item-group) вместо угадывания по типу.
-    Связь: entity.name -> item[name].subgroup -> item-subgroup[subgroup].group -> item-group[group]
+    entity.name -> item_like[name].subgroup -> item-subgroup[subgroup].group -> item-group[group]
+    item_like собирается из ВСЕХ секций dump, где у прототипа есть поле
+    'subgroup' — не только из "item", а из чего угодно (моды часто кладут
+    subgroup прямо в описание предмета любого типа).
     """
 
     def __init__(self, raw: dict):
-        self.items = raw.get("item", {})
+        self.item_like: dict[str, dict] = {}
+        for section_name, section in raw.items():
+            if not isinstance(section, dict):
+                continue
+            for name, proto in section.items():
+                if not isinstance(proto, dict):
+                    continue
+                if "subgroup" in proto and name not in self.item_like:
+                    self.item_like[name] = proto
+
         self.subgroups = raw.get("item-subgroup", {})
         self.groups = raw.get("item-group", {})
 
-        # если сущность добывается не из "item", а из fluid/recipe и т.п. —
-        # на будущее можно расширить список источников subgroup
-        self.extra_item_sources = [
-            raw.get("item-with-entity-data", {}),
-            raw.get("module", {}),
-        ]
-
     def resolve(self, entity_name: str) -> dict:
-        item = self.items.get(entity_name)
-        if not item:
-            for source in self.extra_item_sources:
-                if entity_name in source:
-                    item = source[entity_name]
-                    break
-
+        item = self.item_like.get(entity_name)
         if not item:
             return {"name": "Прочее", "order": "zzz", "icon_filename": None}
 
@@ -146,17 +140,30 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
     resolver = CategoryResolver(raw)
 
     catalog: list[dict] = []
-    category_meta: dict[str, dict] = {}  # name -> {order, icon}
     skipped_no_icon = 0
-    skipped_no_type = 0
+    scanned_sections = 0
+    entity_type_counts: dict[str, int] = {}
 
-    for entity_type in ENTITY_TYPES:
-        prototypes = raw.get(entity_type)
-        if prototypes is None:
-            skipped_no_type += 1
+    for section_name, section in raw.items():
+        if not isinstance(section, dict):
+            continue
+        if section_name in NON_ENTITY_SECTIONS and section_name not in FORCE_INCLUDE_TYPES:
             continue
 
-        for name, proto in prototypes.items():
+        # признак "это физическая сущность": есть collision_box
+        # (у чистых item/recipe/technology его нет)
+        has_any_entity = any(
+            isinstance(p, dict) and "collision_box" in p for p in section.values()
+        )
+        if not has_any_entity:
+            continue
+
+        scanned_sections += 1
+
+        for name, proto in section.items():
+            if not isinstance(proto, dict) or "collision_box" not in proto:
+                continue
+
             icon_filename = _extract_icon_filename(proto)
             if not icon_filename:
                 skipped_no_icon += 1
@@ -165,10 +172,9 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
             width, height = _collision_box_to_size(proto)
             cat = resolver.resolve(name)
 
-            category_meta.setdefault(cat["name"], {
-                "order": cat["order"],
-                "icon": f"/assets/{cat['icon_filename']}" if cat["icon_filename"] else None,
-            })
+            category_icon = (
+                f"/assets/{cat['icon_filename']}" if cat["icon_filename"] else f"/assets/{icon_filename}"
+            )
 
             catalog.append({
                 "typeId": name,
@@ -176,22 +182,36 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "icon": f"/assets/{icon_filename}",
                 "category": cat["name"],
                 "categoryOrder": cat["order"],
+                "categoryIcon": category_icon,
                 "width": width * 32,
                 "height": height * 32,
             })
+            entity_type_counts[section_name] = entity_type_counts.get(section_name, 0) + 1
 
-    # сортируем сам каталог так, чтобы группы шли в игровом порядке (по 'order')
+    # дедуп на случай, если одно имя встретилось в двух секциях подряд
+    seen = set()
+    deduped = []
+    for e in catalog:
+        if e["typeId"] in seen:
+            continue
+        seen.add(e["typeId"])
+        deduped.append(e)
+    catalog = deduped
+
     catalog.sort(key=lambda e: (e["categoryOrder"], e["typeId"]))
 
     CATALOG_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(CATALOG_CACHE_PATH, "w", encoding="utf-8") as f:
         json.dump(catalog, f, ensure_ascii=False, indent=2)
 
+    categories_found = len(set(e["category"] for e in catalog))
+
     return {
         "total": len(catalog),
         "skipped_no_icon": skipped_no_icon,
-        "skipped_no_type": skipped_no_type,
-        "categories_found": len(category_meta),
+        "scanned_sections": scanned_sections,
+        "categories_found": categories_found,
+        "sections_breakdown": entity_type_counts,
     }
 
 

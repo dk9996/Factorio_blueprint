@@ -399,7 +399,7 @@ body{
 .picker-modal{
   width:420px;max-height:70vh;
   border:1px solid var(--line);
-  border-radius:6px;
+  border-radius:6px
 }
 .picker-modal .gm-footer{
   border-top:1px solid var(--line-soft);
@@ -414,20 +414,31 @@ body{
 
 /* ===== SIDEBAR VERSION (встроенная справа, сворачиваемая) ===== */
 .factory-sidebar{
-  width:220px;
+  position:relative;
   border-left:1px solid var(--line);
-  transition:width .18s ease, min-width .18s ease;
+  flex-shrink:0;
+  transition:width .1s ease;
 }
 .factory-sidebar.collapsed{width:0;min-width:0;border-left:none;}
 .factory-sidebar .grid-menu{height:100%;}
 
+.sidebar-resize-handle{
+  position:absolute;
+  left:-3px;top:0;bottom:0;
+  width:6px;
+  cursor:col-resize;
+  z-index:10;
+}
+.sidebar-resize-handle:hover{
+  background: rgba(232,137,12,0.3);
+}
+
 .sidebar-collapse-tab{
-  position:absolute;right:220px;top:50%;transform:translateY(-50%);
+  position:absolute;top:50%;transform:translateY(-50%);
   width:20px;height:44px;background:var(--bg-panel);border:1px solid var(--line);
   border-right:none;border-radius:4px 0 0 4px;
   display:flex;align-items:center;justify-content:center;cursor:pointer;
   color:var(--text-dim);font-size:11px;z-index:5;
-  transition:right .18s ease;
 }
 .sidebar-collapse-tab:hover{color:var(--accent);}
 .sidebar-collapse-tab.collapsed{right:0;}

@@ -8,10 +8,12 @@ interface PickerTarget {
 interface UiStore {
   listCollapsed: boolean
   sidebarCollapsed: boolean
+  sidebarWidth: number
   selectedEntityIds: Set<number>
   pickerTarget: PickerTarget | null
   toggleList: () => void
   toggleSidebar: () => void
+  setSidebarWidth: (width: number) => void
   selectOnly: (id: number) => void
   toggleSelection: (id: number) => void
   setSelection: (ids: number[]) => void
@@ -22,6 +24,8 @@ interface UiStore {
 }
 
 export const useUiStore = create<UiStore>((set) => ({
+  sidebarWidth: 220,
+  setSidebarWidth: (width) => set({ sidebarWidth: Math.min(480, Math.max(160, width)) }),
   listCollapsed: false,
   sidebarCollapsed: false,
   selectedEntityIds: new Set(),

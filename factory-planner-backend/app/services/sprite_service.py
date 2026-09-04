@@ -99,6 +99,9 @@ def _base_and_core_icon_dirs() -> list[Path]:
     base_icons = settings.factorio_game_path / "data" / "base" / "graphics" / "icons"
     if base_icons.exists():
         dirs.append(base_icons)
+    base_item_group = settings.factorio_game_path / "data" / "base" / "graphics" / "item-group"
+    if base_item_group.exists():
+        dirs.append(base_item_group)
     core_icons = settings.factorio_game_path / "data" / "core" / "graphics" / "icons"
     if core_icons.exists():
         dirs.append(core_icons)

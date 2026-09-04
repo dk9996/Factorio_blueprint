@@ -8,6 +8,7 @@ export interface CatalogEntity {
   icon: string
   category: string
   categoryOrder: string
+  categoryIcon: string
   width: number
   height: number
 }

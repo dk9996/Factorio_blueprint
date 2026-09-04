@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useEntityCatalogStore, type CatalogEntity } from '../../store/entityCatalogStore'
 import { useCanvasStore } from '../../store/canvasStore'
 import { useUiStore } from '../../store/uiStore'
@@ -11,18 +11,41 @@ export function EntityPalette() {
   const placing = useCanvasStore((s) => s.placing)
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
+  const sidebarWidth = useUiStore((s) => s.sidebarWidth)
+  const setSidebarWidth = useUiStore((s) => s.setSidebarWidth)
+
+  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  function handleResizeStart(e: React.MouseEvent) {
+    e.preventDefault()
+    resizeRef.current = { startX: e.clientX, startWidth: sidebarWidth }
+    window.addEventListener('mousemove', handleResizeMove)
+    window.addEventListener('mouseup', handleResizeEnd)
+  }
+
+  function handleResizeMove(e: MouseEvent) {
+    if (!resizeRef.current) return
+    // панель справа — тянем влево, чтобы увеличить ширину
+    const dx = resizeRef.current.startX - e.clientX
+    setSidebarWidth(resizeRef.current.startWidth + dx)
+  }
+
+  function handleResizeEnd() {
+    resizeRef.current = null
+    window.removeEventListener('mousemove', handleResizeMove)
+    window.removeEventListener('mouseup', handleResizeEnd)
+  }
 
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
 
-    const categories = useMemo(() => {
+  const categories = useMemo(() => {
     const map = new Map<string, CatalogEntity[]>()
     for (const e of catalog) {
       const arr = map.get(e.category) ?? []
       arr.push(e)
       map.set(e.category, arr)
     }
-    // сортируем категории в игровом порядке (categoryOrder), а не как попало
     return Array.from(map.entries()).sort((a, b) => {
       const orderA = a[1][0]?.categoryOrder ?? 'zzz'
       const orderB = b[1][0]?.categoryOrder ?? 'zzz'
@@ -77,11 +100,18 @@ export function EntityPalette() {
     <>
       <div
         className={`sidebar-collapse-tab${sidebarCollapsed ? ' collapsed' : ''}`}
+        style={{ right: sidebarCollapsed ? 0 : sidebarWidth }}
         onClick={toggleSidebar}
       >
         {sidebarCollapsed ? '‹' : '›'}
       </div>
-      <div className={`factory-sidebar${sidebarCollapsed ? ' collapsed' : ''}`}>
+      <div
+        className={`factory-sidebar${sidebarCollapsed ? ' collapsed' : ''}`}
+        style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
+      >
+        {!sidebarCollapsed && (
+          <div className="sidebar-resize-handle" onMouseDown={handleResizeStart} />
+        )}
         <div className="grid-menu">
           <div className="gm-header">
             <span className="gm-title">Сущности</span>
@@ -107,7 +137,7 @@ export function EntityPalette() {
                   title={name}
                   onClick={() => setActiveCategory(name)}
                 >
-                  <img src={items[0].icon} alt={name} />
+                  <img src={items[0].categoryIcon} alt={name} />
                 </div>
               ))}
             </div>
