@@ -46,6 +46,25 @@ class ModSource:
                     results.append(name[len(self.zip_root) + 1:])
         return results
 
+    def list_files(self, rel_dir: str, suffix: str) -> list[str]:
+        """Универсальный список файлов с заданным суффиксом внутри rel_dir."""
+        rel_dir = rel_dir.strip("/")
+        results = []
+
+        if self.kind == "dir":
+            dir_path = self.path / rel_dir
+            if dir_path.exists():
+                for p in dir_path.rglob(f"*{suffix}"):
+                    results.append(str(p.relative_to(self.path)).replace("\\", "/"))
+            return results
+
+        with zipfile.ZipFile(self.path, "r") as zf:
+            prefix = f"{self.zip_root}/{rel_dir}/"
+            for name in zf.namelist():
+                if name.startswith(prefix) and name.lower().endswith(suffix.lower()):
+                    results.append(name[len(self.zip_root) + 1:])
+        return results
+
 
 @lru_cache(maxsize=1)
 def build_mod_sources() -> dict[str, ModSource]:

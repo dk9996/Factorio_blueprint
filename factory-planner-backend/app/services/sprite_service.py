@@ -8,14 +8,17 @@ ICON_SIZE = 64
 SPRITES_CACHE_DIR = Path("data/cache/sprites")
 
 
+from app.services.dump_service import get_icon_size_map
+
 def crop_all_icons(force: bool = False) -> dict:
     SPRITES_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    icon_sizes = get_icon_size_map()  # filename -> точный icon_size из dump, если известен
 
     processed = 0
     skipped = 0
     errors: list[str] = []
 
-    # 1. Базовая игра и core — как раньше, обычные папки на диске
     for src_dir in _base_and_core_icon_dirs():
         for png_path in src_dir.rglob("*.png"):
             out_path = SPRITES_CACHE_DIR / png_path.name
@@ -23,17 +26,15 @@ def crop_all_icons(force: bool = False) -> dict:
                 skipped += 1
                 continue
             try:
-                _crop_and_save(png_path.read_bytes(), out_path)
+                known_size = icon_sizes.get(png_path.name)
+                _crop_and_save(png_path.read_bytes(), out_path, known_size)
                 processed += 1
             except Exception as e:
                 errors.append(f"{png_path.name}: {e}")
 
-    # 2. Моды — через ModSource, поддерживает и папки, и zip
     mod_sources = build_mod_sources()
     for mod_name, source in mod_sources.items():
-        # иконки сущностей у модов обычно лежат в graphics/icons,
-        # но некоторые кладут их в другие подпапки graphics/ — берём всё graphics
-        png_files = source.list_png_files()  # весь мод целиком — иконки могут лежать где угодно
+        png_files = source.list_png_files()
         for rel_path in png_files:
             filename = Path(rel_path).name
             out_path = SPRITES_CACHE_DIR / filename
@@ -44,7 +45,8 @@ def crop_all_icons(force: bool = False) -> dict:
                 data = source.read_bytes(rel_path)
                 if data is None:
                     continue
-                _crop_and_save(data, out_path)
+                known_size = icon_sizes.get(filename)
+                _crop_and_save(data, out_path, known_size)
                 processed += 1
             except Exception as e:
                 errors.append(f"[{mod_name}] {filename}: {e}")
@@ -54,45 +56,39 @@ def crop_all_icons(force: bool = False) -> dict:
         "skipped": skipped,
         "errors": errors,
         "mods_scanned": len(mod_sources),
+        "known_icon_sizes": len(icon_sizes),
     }
 
 
-def _crop_and_save(image_bytes: bytes, out_path: Path):
+def _crop_and_save(image_bytes: bytes, out_path: Path, known_size: int | None = None):
     with Image.open(BytesIO(image_bytes)) as img:
         img.load()
         w, h = img.width, img.height
 
-        if w < ICON_SIZE or h < ICON_SIZE:
-            # маленькая иконка — просто сохраняем как есть, ничего не режем
-            img.save(out_path)
-            return
-
-        if h == ICON_SIZE and w % ICON_SIZE == 0 and w > ICON_SIZE:
-            # классическая mip-полоса: высота ровно ICON_SIZE,
-            # ширина кратна ICON_SIZE (64+32+16+8=120 не кратно 64,
-            # поэтому проверяем по-другому — см. ниже)
-            cropped = img.crop((0, 0, ICON_SIZE, ICON_SIZE))
+        # 1. Есть точный размер кадра из dump — режем именно его, без угадывания
+        if known_size and w >= known_size and h >= known_size:
+            cropped = img.crop((0, 0, known_size, known_size))
+            if known_size != ICON_SIZE:
+                cropped = cropped.resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
             cropped.save(out_path)
             return
 
+        # 2. Фолбэк — прежняя эвристика, если точного размера нет в dump
+        if w < ICON_SIZE or h < ICON_SIZE:
+            img.save(out_path)
+            return
+
         if h == ICON_SIZE and w > ICON_SIZE:
-            # высота точно ICON_SIZE, ширина больше — это mip-полоса
-            # (даже если сумма кадров не кратна ровно, первый кадр всегда ICON_SIZE)
             cropped = img.crop((0, 0, ICON_SIZE, ICON_SIZE))
             cropped.save(out_path)
             return
 
         if w == h:
-            # квадратная иконка большего размера (128x128, 256x256 и т.п.)
-            # без мип-полосы — просто уменьшаем до ICON_SIZE, не обрезаем
             resized = img.resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
             resized.save(out_path)
             return
 
-        # нестандартные пропорции — не пытаемся угадать, сохраняем оригинал
-        # как есть, чтобы не испортить визуально; фронт сам впишет в рамку
         img.save(out_path)
-
 
 def _base_and_core_icon_dirs() -> list[Path]:
     dirs = []

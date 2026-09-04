@@ -2,13 +2,12 @@ import json
 import subprocess
 from pathlib import Path
 from app.config import settings
+from app.services.locale_service import get_item_group_locale
 
 DUMP_CACHE_PATH = Path("data/cache/data-raw-dump.json")
 CATALOG_CACHE_PATH = Path("data/cache/entity_catalog.json")
+ICON_SIZES_CACHE_PATH = Path("data/cache/icon_sizes.json")
 
-# Секции dump, которые заведомо НЕ являются физическими сущностями на карте
-# (даже если в них случайно завалялось поле collision_box) — исключаем,
-# чтобы не тащить в каталог мусор вроде декоративных частиц/GUI-стилей.
 NON_ENTITY_SECTIONS = {
     "font", "gui-style", "utility-constants", "utility-sounds", "sprite",
     "utility-sprites", "god-controller", "editor-controller",
@@ -25,13 +24,17 @@ NON_ENTITY_SECTIONS = {
     "smoke", "smoke-with-trigger", "sticker", "flame-thrower-explosion",
     "artillery-flare", "beam", "corpse", "particle-source",
     "projectile", "stream", "fire", "resource-category",
-    "equipment-category", "unit-spawner",  # unit-spawner (биттеры) — оставим?
+    "simple-entity", "simple-entity-with-owner", "simple-entity-with-force",
+    "fish", "cliff", "tile-ghost", "item-request-proxy",
+    "character", "character-corpse", "item-entity", "unit",
+    "unit-spawner", "tree", "plant", "resource", "decorative",
+    "optimized-decorative", "flying-text", "highlight-box",
+    "cursor-box", "leaf-particle", "rail-remnants", "entity-ghost", "market",
+    "gun", "ammo", "capsule", "armor", "spidertron-remote",
 }
 
-# Точечные категории, которые заведомо оставляем, даже если бы попали
-# под фильтр "тип начинается с decorative/optimized" и т.п.
 FORCE_INCLUDE_TYPES = {
-    "unit-spawner",  # гнёзда биттеров — не строишь их, но пусть будут видны
+    "unit-spawner",
 }
 
 
@@ -77,38 +80,106 @@ def _collision_box_to_size(prototype: dict) -> tuple[int, int]:
     box = prototype.get("collision_box")
     if not box:
         return (1, 1)
-    (x1, y1), (x2, y2) = box
-    width = max(1, round(x2 - x1))
-    height = max(1, round(y2 - y1))
-    return (width, height)
+
+    try:
+        if isinstance(box, (list, tuple)) and len(box) == 2:
+            (x1, y1), (x2, y2) = box
+            width = max(1, round(x2 - x1))
+            height = max(1, round(y2 - y1))
+            return (width, height)
+
+        if isinstance(box, dict):
+            left_top = box.get("left_top", {})
+            right_bottom = box.get("right_bottom", {})
+            x1 = left_top.get("x", 0) if isinstance(left_top, dict) else left_top[0]
+            y1 = left_top.get("y", 0) if isinstance(left_top, dict) else left_top[1]
+            x2 = right_bottom.get("x", 0) if isinstance(right_bottom, dict) else right_bottom[0]
+            y2 = right_bottom.get("y", 0) if isinstance(right_bottom, dict) else right_bottom[1]
+            width = max(1, round(x2 - x1))
+            height = max(1, round(y2 - y1))
+            return (width, height)
+
+    except (ValueError, TypeError, IndexError, KeyError):
+        pass
+
+    return (1, 1)
+
+
+def build_icon_size_map(raw: dict) -> dict[str, int]:
+    sizes: dict[str, int] = {}
+
+    for section_name, section in raw.items():
+        if not isinstance(section, dict):
+            continue
+        for name, proto in section.items():
+            if not isinstance(proto, dict):
+                continue
+
+            top_icon_size = proto.get("icon_size")
+
+            icon_path = proto.get("icon")
+            if icon_path and top_icon_size:
+                filename = icon_path.rsplit("/", 1)[-1]
+                sizes.setdefault(filename, top_icon_size)
+
+            icons_layers = proto.get("icons")
+            if icons_layers:
+                for layer in icons_layers:
+                    if not isinstance(layer, dict):
+                        continue
+                    layer_path = layer.get("icon")
+                    layer_size = layer.get("icon_size", top_icon_size)
+                    if layer_path and layer_size:
+                        filename = layer_path.rsplit("/", 1)[-1]
+                        sizes.setdefault(filename, layer_size)
+
+    return sizes
+
+
+def get_icon_size_map() -> dict[str, int]:
+    if not ICON_SIZES_CACHE_PATH.exists():
+        return {}
+    with open(ICON_SIZES_CACHE_PATH, encoding="utf-8") as f:
+        return json.load(f)
 
 
 class CategoryResolver:
-    """
-    entity.name -> item_like[name].subgroup -> item-subgroup[subgroup].group -> item-group[group]
-    item_like собирается из ВСЕХ секций dump, где у прототипа есть поле
-    'subgroup' — не только из "item", а из чего угодно (моды часто кладут
-    subgroup прямо в описание предмета любого типа).
-    """
-
-    def __init__(self, raw: dict):
+    def __init__(self, raw: dict, locale_map: dict[str, str] | None = None):
+        self.locale_map = locale_map or {}
+        self.by_place_result: dict[str, dict] = {}
         self.item_like: dict[str, dict] = {}
+
         for section_name, section in raw.items():
             if not isinstance(section, dict):
                 continue
             for name, proto in section.items():
                 if not isinstance(proto, dict):
                     continue
-                if "subgroup" in proto and name not in self.item_like:
-                    self.item_like[name] = proto
+                if "subgroup" not in proto:
+                    continue
+
+                place_result = proto.get("place_result")
+                if place_result:
+                    self.by_place_result.setdefault(place_result, proto)
+
+                self.item_like.setdefault(name, proto)
 
         self.subgroups = raw.get("item-subgroup", {})
         self.groups = raw.get("item-group", {})
 
     def resolve(self, entity_name: str) -> dict:
-        item = self.item_like.get(entity_name)
+        item = self.by_place_result.get(entity_name) or self.item_like.get(entity_name)
+
         if not item:
-            return {"name": "Прочее", "order": "zzz", "icon_filename": None}
+            return {
+                "name": "Прочее",
+                "groupId": "other",
+                "groupOrder": "zzz",
+                "subgroup": "other",
+                "subgroupOrder": "zzz",
+                "itemOrder": entity_name,
+                "icon_filename": None,
+            }
 
         subgroup_name = item.get("subgroup")
         subgroup = self.subgroups.get(subgroup_name) if subgroup_name else None
@@ -116,16 +187,30 @@ class CategoryResolver:
         group = self.groups.get(group_name) if group_name else None
 
         if not group:
-            return {"name": "Прочее", "order": "zzz", "icon_filename": None}
+            return {
+                "name": "Прочее",
+                "groupId": group_name or "other",
+                "groupOrder": "zzz",
+                "subgroup": subgroup_name or "other",
+                "subgroupOrder": "zzz",
+                "itemOrder": item.get("order", entity_name),
+                "icon_filename": None,
+            }
 
         icon_filename = None
         icon_path = group.get("icon")
         if icon_path:
             icon_filename = icon_path.rsplit("/", 1)[-1]
 
+        display_name = self.locale_map.get(group_name, group_name)
+
         return {
-            "name": group.get("name", group_name),
-            "order": group.get("order", "zzz"),
+            "name": display_name,
+            "groupId": group_name,
+            "groupOrder": group.get("order", "zzz"),
+            "subgroup": subgroup_name,
+            "subgroupOrder": subgroup.get("order", "zzz") if subgroup else "zzz",
+            "itemOrder": item.get("order", entity_name),
             "icon_filename": icon_filename,
         }
 
@@ -137,7 +222,13 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
     with open(DUMP_CACHE_PATH, encoding="utf-8") as f:
         raw = json.load(f)
 
-    resolver = CategoryResolver(raw)
+    locale_map = get_item_group_locale()
+    resolver = CategoryResolver(raw, locale_map)
+
+    icon_sizes = build_icon_size_map(raw)
+    ICON_SIZES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(ICON_SIZES_CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(icon_sizes, f)
 
     catalog: list[dict] = []
     skipped_no_icon = 0
@@ -150,8 +241,6 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
         if section_name in NON_ENTITY_SECTIONS and section_name not in FORCE_INCLUDE_TYPES:
             continue
 
-        # признак "это физическая сущность": есть collision_box
-        # (у чистых item/recipe/technology его нет)
         has_any_entity = any(
             isinstance(p, dict) and "collision_box" in p for p in section.values()
         )
@@ -181,14 +270,17 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "label": name,
                 "icon": f"/assets/{icon_filename}",
                 "category": cat["name"],
-                "categoryOrder": cat["order"],
+                "categoryId": cat["groupId"],
+                "categoryOrder": cat["groupOrder"],
+                "subgroup": cat["subgroup"],
+                "subgroupOrder": cat["subgroupOrder"],
+                "itemOrder": cat["itemOrder"],
                 "categoryIcon": category_icon,
                 "width": width * 32,
                 "height": height * 32,
             })
             entity_type_counts[section_name] = entity_type_counts.get(section_name, 0) + 1
 
-    # дедуп на случай, если одно имя встретилось в двух секциях подряд
     seen = set()
     deduped = []
     for e in catalog:
@@ -198,7 +290,7 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
         deduped.append(e)
     catalog = deduped
 
-    catalog.sort(key=lambda e: (e["categoryOrder"], e["typeId"]))
+    catalog.sort(key=lambda e: (e["categoryOrder"], e["subgroupOrder"], e["itemOrder"]))
 
     CATALOG_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(CATALOG_CACHE_PATH, "w", encoding="utf-8") as f:

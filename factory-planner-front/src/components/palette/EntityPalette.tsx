@@ -39,9 +39,21 @@ export function EntityPalette() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
 
+    // Временно скрытые категории — данные остаются в каталоге,
+  // просто не показываются в палитре. Уберём фильтр, когда понадобятся
+  // (например, при подключении симуляции и обнаружении, что чего-то не хватает).
+  const HIDDEN_CATEGORY_IDS = new Set([
+    'enemies',       // enen
+    'environment',   // envir — или как оно реально называется в твоём dump
+    'effects',       // effec
+    'se-spoilers',   // se-spoil
+    'other',         // othe / Прочее
+  ])
+
   const categories = useMemo(() => {
     const map = new Map<string, CatalogEntity[]>()
     for (const e of catalog) {
+      if (HIDDEN_CATEGORY_IDS.has(e.categoryId)) continue
       const arr = map.get(e.category) ?? []
       arr.push(e)
       map.set(e.category, arr)
@@ -61,10 +73,26 @@ export function EntityPalette() {
   const searchResults = isSearching
     ? catalog.filter((e) => e.label.toLowerCase().includes(query.toLowerCase()))
     : []
-  const currentItems = activeCategory
-    ? categories.find(([name]) => name === activeCategory)?.[1] ?? []
-    : []
-  const itemsToShow = isSearching ? searchResults : currentItems
+    const currentItemsGrouped = useMemo(() => {
+    const items = activeCategory
+      ? categories.find(([name]) => name === activeCategory)?.[1] ?? []
+      : []
+
+    const bySubgroup = new Map<string, CatalogEntity[]>()
+    for (const item of items) {
+      const arr = bySubgroup.get(item.subgroup) ?? []
+      arr.push(item)
+      bySubgroup.set(item.subgroup, arr)
+    }
+
+    // сортируем подгруппы по subgroupOrder, а внутри — по itemOrder
+    return Array.from(bySubgroup.entries())
+      .sort((a, b) => (a[1][0]?.subgroupOrder ?? 'zzz').localeCompare(b[1][0]?.subgroupOrder ?? 'zzz'))
+      .map(([subgroup, subItems]) => [
+        subgroup,
+        [...subItems].sort((a, b) => a.itemOrder.localeCompare(b.itemOrder)),
+      ] as [string, CatalogEntity[]])
+  }, [activeCategory, categories])
 
   const activeTypeId =
     placing?.items.length === 1 ? placing.items[0].typeId : null
@@ -150,8 +178,29 @@ export function EntityPalette() {
               </div>
             )}
             {!loading && !error && (
+              <div className="gm-rows">
+                {currentItemsGrouped.map(([subgroup, items]) => (
+                  <div className="gm-row" key={subgroup}>
+                    {items.map((e) => (
+                      <div
+                        key={e.typeId}
+                        className={`gm-cell${activeTypeId === e.typeId ? ' active' : ''}`}
+                        title={e.label}
+                        draggable
+                        onDragStart={(ev) => handleDragStart(ev, e)}
+                        onClick={() => pick(e)}
+                      >
+                        <img src={e.icon} alt={e.label} />
+                      </div>
+                    ))}
+                  </div>
+                ))}
+                {currentItemsGrouped.length === 0 && <div className="gm-empty">Ничего не найдено</div>}
+              </div>
+            )}
+            {!loading && !error && isSearching && (
               <div className="gm-grid">
-                {itemsToShow.map((e) => (
+                {searchResults.map((e) => (
                   <div
                     key={e.typeId}
                     className={`gm-cell${activeTypeId === e.typeId ? ' active' : ''}`}
@@ -163,7 +212,7 @@ export function EntityPalette() {
                     <img src={e.icon} alt={e.label} />
                   </div>
                 ))}
-                {itemsToShow.length === 0 && <div className="gm-empty">Ничего не найдено</div>}
+                {searchResults.length === 0 && <div className="gm-empty">Ничего не найдено</div>}
               </div>
             )}
           </div>

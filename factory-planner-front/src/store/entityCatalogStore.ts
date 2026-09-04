@@ -7,7 +7,11 @@ export interface CatalogEntity {
   label: string
   icon: string
   category: string
+  categoryId: string
   categoryOrder: string
+  subgroup: string
+  subgroupOrder: string
+  itemOrder: string
   categoryIcon: string
   width: number
   height: number
@@ -22,7 +26,11 @@ interface EntityCatalogStore {
 }
 
 function withResolvedIcons(entities: CatalogEntity[]): CatalogEntity[] {
-  return entities.map((e) => ({ ...e, icon: resolveAssetUrl(e.icon) }))
+  return entities.map((e) => ({
+    ...e,
+    icon: resolveAssetUrl(e.icon),
+    categoryIcon: resolveAssetUrl(e.categoryIcon),
+  }))
 }
 
 export const useEntityCatalogStore = create<EntityCatalogStore>((set) => ({

@@ -47,6 +47,7 @@ body{
   grid-template-columns: auto 1fr auto;
   overflow:hidden;
   position:relative;
+  min-height:0;
 }
 
 /* ===== LEFT: FACTORY LIST ===== */
@@ -337,9 +338,10 @@ body{
 
 /* ===== ОБЩИЙ СТИЛЬ "МЕНЮ ВЫБОРА" (как окно "Установить призрак курсора") ===== */
 .grid-menu{
-  background:#232220;
-  display:flex;flex-direction:column;
-  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  height:100%;
+  min-height:0; /* критично */
 }
 .gm-header{
   display:flex;align-items:center;gap:8px;
@@ -365,7 +367,9 @@ body{
   color:var(--text);font-size:12px;padding:6px 9px;
 }
 .gm-body{
-  flex:1;overflow-y:auto;
+  flex:1;
+  overflow-y:auto;
+  min-height:0; /* критично */
   padding:10px;
 }
 .gm-grid{
@@ -417,9 +421,11 @@ body{
   position:relative;
   border-left:1px solid var(--line);
   flex-shrink:0;
-  transition:width .1s ease;
+  display:flex;
+  flex-direction:column;
+  min-height:0; /* критично для flex-скролла */
 }
-.factory-sidebar.collapsed{width:0;min-width:0;border-left:none;}
+.factory-sidebar.collapsed{border-left:none;overflow:hidden;}
 .factory-sidebar .grid-menu{height:100%;}
 
 .sidebar-resize-handle{
@@ -644,4 +650,15 @@ body{
   width:6px;height:6px;border-radius:50%;
   background:var(--warn);
   flex-shrink:0;
+}
+
+.gm-rows{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.gm-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:4px;
 }
