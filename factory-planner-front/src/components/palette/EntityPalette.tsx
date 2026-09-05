@@ -105,22 +105,31 @@ export function EntityPalette() {
             items: [
               {
                 typeId: entity.typeId,
-                icon: entity.icon,
+                icon: entity.entitySprite ?? entity.icon,
                 label: entity.label,
                 width: entity.width,
                 height: entity.height,
                 offsetX: 0,
                 offsetY: 0,
+                craftingCategories: entity.craftingCategories ?? undefined,
+                moduleSlots: entity.moduleSlots,
               },
             ],
           },
     )
   }
 
-  function handleDragStart(e: React.DragEvent, entity: CatalogEntity) {
+    function handleDragStart(e: React.DragEvent, entity: CatalogEntity) {
     e.dataTransfer.setData(
       'application/x-hotbar-item',
-      JSON.stringify({ kind: 'entity', typeId: entity.typeId, icon: entity.icon, label: entity.label, width: entity.width, height: entity.height }),
+      JSON.stringify({
+        kind: 'entity',
+        typeId: entity.typeId,
+        icon: entity.entitySprite ?? entity.icon,
+        label: entity.label,
+        width: entity.width,
+        height: entity.height,
+      }),
     )
   }
 

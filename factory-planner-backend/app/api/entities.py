@@ -1,8 +1,12 @@
 from fastapi import APIRouter, HTTPException
 from app.services.dump_service import build_entity_catalog, get_cached_catalog
+from app.services.recipe_service import get_cached_recipes
 
 router = APIRouter(prefix="/api/entities", tags=["entities"])
 
+@router.get("/recipes")
+def list_recipes():
+    return get_cached_recipes()
 
 @router.get("")
 def list_entities():

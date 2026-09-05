@@ -9,6 +9,8 @@ import { useClipboardStore } from '../../store/clipboardStore'
 import { ImportExportPanel } from './ImportExportPanel'
 import { buildPlacingGroup } from '../../lib/clipboard/buildPlacingGroup'
 import { useViewportStore } from '../../store/viewportStore'
+import { MachineInfoPanel } from './MachineInfoPanel'
+import { RecipePickerModal } from './RecipePickerModal'
 
 const GRID = 32
 
@@ -17,7 +19,6 @@ export function BlueprintCanvas() {
   const offsetY = useViewportStore((s) => s.offsetY)
   const scale = useViewportStore((s) => s.scale)
   const setOffset = useViewportStore((s) => s.setOffset)
-  
   const setScale = useViewportStore((s) => s.setScale)
 
   const panRef = useRef<{ startX: number; startY: number; origOffsetX: number; origOffsetY: number } | null>(null)
@@ -35,6 +36,7 @@ export function BlueprintCanvas() {
   const addEntities = useCanvasStore((s) => s.addEntities)
   const canPlaceAt = useCanvasStore((s) => s.canPlaceAt)
   const removeEntities = useCanvasStore((s) => s.removeEntities)
+  const setEntityRecipe = useCanvasStore((s) => s.setEntityRecipe)
   const undo = useCanvasStore((s) => s.undo)
   const redo = useCanvasStore((s) => s.redo)
 
@@ -49,7 +51,7 @@ export function BlueprintCanvas() {
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
 
-    function handleCanvasMouseDownForPan(e: React.MouseEvent) {
+  function handleCanvasMouseDownForPan(e: React.MouseEvent) {
     if (e.button !== 2) return // только правая кнопка
     e.preventDefault()
     panRef.current = {
@@ -62,7 +64,7 @@ export function BlueprintCanvas() {
     window.addEventListener('mouseup', handlePanUp)
   }
 
-    function handleWheel(e: React.WheelEvent) {
+  function handleWheel(e: React.WheelEvent) {
     e.preventDefault()
     const rect = wrapRef.current!.getBoundingClientRect()
     const cursorX = e.clientX - rect.left
@@ -71,7 +73,6 @@ export function BlueprintCanvas() {
     const delta = e.deltaY < 0 ? 1.1 : 1 / 1.1
     const newScale = Math.min(3, Math.max(0.25, scale * delta))
 
-    // сохраняем точку под курсором на месте при зуме
     const worldX = (cursorX - offsetX) / scale
     const worldY = (cursorY - offsetY) / scale
     const newOffsetX = cursorX - worldX * newScale
@@ -94,11 +95,10 @@ export function BlueprintCanvas() {
     window.removeEventListener('mouseup', handlePanUp)
   }
 
-  // рамка выделения (marquee)
   const [marquee, setMarquee] = useState<{ startX: number; startY: number; x: number; y: number } | null>(null)
   const marqueeShiftRef = useRef(false)
 
-    function getLocalPoint(e: React.MouseEvent) {
+  function getLocalPoint(e: React.MouseEvent) {
     const rect = wrapRef.current!.getBoundingClientRect()
     const screenX = e.clientX - rect.left
     const screenY = e.clientY - rect.top
@@ -109,30 +109,30 @@ export function BlueprintCanvas() {
   }
 
   function handleCanvasMouseDown(e: React.MouseEvent) {
-  if (e.button !== 0) return // только левая кнопка — рамка выделения
-  if (e.target !== wrapRef.current) return
-  if (placing) return
+    if (e.button !== 0) return
+    if (e.target !== wrapRef.current) return
+    if (placing) return
 
-  const { x, y } = getLocalPoint(e)
-  marqueeShiftRef.current = e.shiftKey
-  setMarquee({ startX: x, startY: y, x, y })
-  window.addEventListener('mousemove', handleMarqueeMove)
-  window.addEventListener('mouseup', handleMarqueeUp)
-}
+    const { x, y } = getLocalPoint(e)
+    marqueeShiftRef.current = e.shiftKey
+    setMarquee({ startX: x, startY: y, x, y })
+    window.addEventListener('mousemove', handleMarqueeMove)
+    window.addEventListener('mouseup', handleMarqueeUp)
+  }
 
   function handleMarqueeMove(e: MouseEvent) {
-  setMarquee((prev) => {
-    if (!prev || !wrapRef.current) return prev
-    const rect = wrapRef.current.getBoundingClientRect()
-    const screenX = e.clientX - rect.left
-    const screenY = e.clientY - rect.top
-    return {
-      ...prev,
-      x: (screenX - offsetX) / scale,
-      y: (screenY - offsetY) / scale,
-    }
-  })
-}
+    setMarquee((prev) => {
+      if (!prev || !wrapRef.current) return prev
+      const rect = wrapRef.current.getBoundingClientRect()
+      const screenX = e.clientX - rect.left
+      const screenY = e.clientY - rect.top
+      return {
+        ...prev,
+        x: (screenX - offsetX) / scale,
+        y: (screenY - offsetY) / scale,
+      }
+    })
+  }
 
   function handleMarqueeUp() {
     setMarquee((prev) => {
@@ -180,7 +180,7 @@ export function BlueprintCanvas() {
 
   function handleCanvasClick(e: React.MouseEvent) {
     if (e.target !== wrapRef.current) return
-    if (!placing) return // выделение уже обработано в mousedown/mouseup рамки
+    if (!placing) return
 
     const { x: rawX, y: rawY } = getLocalPoint(e)
     const baseX = Math.round(rawX / GRID) * GRID
@@ -194,12 +194,14 @@ export function BlueprintCanvas() {
       y: baseY + item.offsetY,
       width: item.width,
       height: item.height,
+      craftingCategories: item.craftingCategories,
+      moduleSlots: item.moduleSlots,
     }))
 
     const allFit = toPlace.every((p) =>
       canPlaceAt({ x: p.x, y: p.y, width: p.width, height: p.height }),
     )
-    if (!allFit) return // не размещаем, призрак остаётся активным
+    if (!allFit) return
 
     if (toPlace.length === 1) {
       addEntity(toPlace[0])
@@ -229,20 +231,17 @@ export function BlueprintCanvas() {
 
       const ctrl = e.ctrlKey || e.metaKey
 
-      // Ctrl+Z — undo
       if (ctrl && !e.shiftKey && e.code === 'KeyZ') {
         e.preventDefault()
         undo()
         return
       }
-      // Ctrl+Shift+Z или Ctrl+Y — redo
       if ((ctrl && e.shiftKey && e.code === 'KeyZ') || (ctrl && e.code === 'KeyY')) {
         e.preventDefault()
         redo()
         return
       }
 
-      // Ctrl+C — копировать выделенное
       if (ctrl && e.code === 'KeyC') {
         e.preventDefault()
         const selected = entities.filter((en) => selectedEntityIds.has(en.id))
@@ -250,7 +249,6 @@ export function BlueprintCanvas() {
         return
       }
 
-      // Ctrl+X — вырезать
       if (ctrl && e.code === 'KeyX') {
         e.preventDefault()
         const selected = entities.filter((en) => selectedEntityIds.has(en.id))
@@ -262,7 +260,6 @@ export function BlueprintCanvas() {
         return
       }
 
-      // Ctrl+V — взять буфер в призрак, разместить кликом
       if (ctrl && e.code === 'KeyV') {
         e.preventDefault()
         if (clipboardBuffer.length === 0) return
@@ -271,7 +268,6 @@ export function BlueprintCanvas() {
         return
       }
 
-      // Q — пипетка / отмена размещения
       if (e.code === 'KeyQ' && !e.repeat) {
         const target = document.elementFromPoint(lastMouse.current.x, lastMouse.current.y)
         const entityEl = target?.closest('[data-entity-id]') as HTMLElement | null
@@ -298,7 +294,6 @@ export function BlueprintCanvas() {
         return
       }
 
-      // Delete / Backspace — удаление выделенного
       if (e.code === 'Delete' || e.code === 'Backspace') {
         if (selectedEntityIds.size > 0) {
           e.preventDefault()
@@ -308,7 +303,6 @@ export function BlueprintCanvas() {
         return
       }
 
-      // Escape — снять выделение / отменить размещение
       if (e.code === 'Escape') {
         if (placing) setPlacing(null)
         else clearSelection()
@@ -357,7 +351,7 @@ export function BlueprintCanvas() {
       }
     : null
 
-    return (
+  return (
     <div
       className="canvas-wrap"
       ref={wrapRef}
@@ -411,7 +405,20 @@ export function BlueprintCanvas() {
         {marqueeRect && <div className="marquee-box" style={marqueeRect} />}
       </div>
 
-      {selectedEntity && <StatPopover entity={selectedEntity} />}
+      {selectedEntity && selectedEntity.craftingCategories && selectedEntity.craftingCategories.length > 0 && (
+        selectedEntity.recipe
+          ? <MachineInfoPanel entity={selectedEntity} onClose={clearSelection} />
+          : (
+            <RecipePickerModal
+              craftingCategories={selectedEntity.craftingCategories}
+              onPick={(recipeName) => setEntityRecipe(selectedEntity.id, recipeName)}
+              onClose={clearSelection}
+            />
+          )
+      )}
+      {selectedEntity && (!selectedEntity.craftingCategories || selectedEntity.craftingCategories.length === 0) && (
+        <StatPopover entity={selectedEntity} />
+      )}
 
       <ImportExportPanel />
       <BalancePanel />

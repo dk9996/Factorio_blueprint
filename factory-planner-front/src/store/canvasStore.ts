@@ -13,6 +13,9 @@ export interface PlacedEntity {
   power?: number
   pollution?: number
   throughput?: number
+  recipe?: string | null
+  craftingCategories?: string[]
+  moduleSlots?: number
 }
 
 export interface PlacingGroupItem {
@@ -23,6 +26,8 @@ export interface PlacingGroupItem {
   height: number
   offsetX: number
   offsetY: number
+  craftingCategories?: string[]
+  moduleSlots?: number
 }
 
 export interface PlacingState {
@@ -51,12 +56,14 @@ interface Snapshot {
 }
 
 interface CanvasStore {
+  setEntityRecipe: (id: number, recipe: string | null) => void
   entities: PlacedEntity[]
   nextId: number
 
   placing: PlacingState | null
   setPlacing: (state: PlacingState | null) => void
-
+  
+  
   past: Snapshot[]
   future: Snapshot[]
   loadEntities: (entities: PlacedEntity[]) => void
@@ -85,6 +92,8 @@ const mockInitial: PlacedEntity[] = [
 ]
 
 export const useCanvasStore = create<CanvasStore>((set, get) => {
+
+  
   
   function pushHistory() {
     const { entities, nextId, past } = get()
@@ -204,6 +213,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     },
 
     redo: () => {
+      
       const { future, entities, nextId, past } = get()
       if (future.length === 0) return
       const next = future[0]
@@ -216,5 +226,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
         future: newFuture,
       })
     },
+    setEntityRecipe: (id, recipe) =>
+      set((state) => ({
+        entities: state.entities.map((e) => (e.id === id ? { ...e, recipe } : e)),
+      })),
   }
 })

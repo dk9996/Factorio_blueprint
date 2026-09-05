@@ -6,6 +6,7 @@ export interface CatalogEntity {
   typeId: string
   label: string
   icon: string
+  entitySprite: string | null
   category: string
   categoryId: string
   categoryOrder: string
@@ -15,6 +16,9 @@ export interface CatalogEntity {
   categoryIcon: string
   width: number
   height: number
+  craftingCategories: string[] | null
+  moduleSlots: number
+  craftingSpeed: number | null
 }
 
 interface EntityCatalogStore {
@@ -30,6 +34,7 @@ function withResolvedIcons(entities: CatalogEntity[]): CatalogEntity[] {
     ...e,
     icon: resolveAssetUrl(e.icon),
     categoryIcon: resolveAssetUrl(e.categoryIcon),
+    entitySprite: e.entitySprite ? resolveAssetUrl(e.entitySprite) : null,
   }))
 }
 

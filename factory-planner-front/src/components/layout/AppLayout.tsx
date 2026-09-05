@@ -8,15 +8,21 @@ import { Hotbar } from '../hotbar/Hotbar'
 import { EntityPicker } from '../hotbar/EntityPicker'
 import { useFactoryStore } from '../../store/factoryStore'
 import { useEntityCatalogStore } from '../../store/entityCatalogStore'
+import { useRecipeCatalogStore } from '../../store/recipeCatalogStore'
+
+// внутри AppLayout:
+
 
 export function AppLayout() {
   const fetchFactories = useFactoryStore((s) => s.fetchFactories)
   const fetchEntities = useEntityCatalogStore((s) => s.fetchEntities)
+  const fetchRecipes = useRecipeCatalogStore((s) => s.fetchRecipes)
 
   useEffect(() => {
     fetchFactories()
     fetchEntities()
-  }, [fetchFactories, fetchEntities])
+    fetchRecipes()
+  }, [fetchFactories, fetchEntities, fetchRecipes])
 
   return (
     <div className="app">

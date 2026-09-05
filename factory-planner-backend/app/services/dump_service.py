@@ -3,10 +3,14 @@ import subprocess
 from pathlib import Path
 from app.config import settings
 from app.services.locale_service import get_item_group_locale
+from app.services.entity_sprite_service import build_entity_sprite_map
+from app.services.locale_service import get_item_group_locale, get_entity_name_locale
+from app.services.recipe_service import build_recipe_catalog
 
 DUMP_CACHE_PATH = Path("data/cache/data-raw-dump.json")
 CATALOG_CACHE_PATH = Path("data/cache/entity_catalog.json")
 ICON_SIZES_CACHE_PATH = Path("data/cache/icon_sizes.json")
+ENTITY_SPRITES_DIR = Path("data/cache/entity_sprites")
 
 NON_ENTITY_SECTIONS = {
     "font", "gui-style", "utility-constants", "utility-sounds", "sprite",
@@ -223,6 +227,7 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
         raw = json.load(f)
 
     locale_map = get_item_group_locale()
+    entity_name_map = get_entity_name_locale()
     resolver = CategoryResolver(raw, locale_map)
 
     icon_sizes = build_icon_size_map(raw)
@@ -234,6 +239,10 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
     skipped_no_icon = 0
     scanned_sections = 0
     entity_type_counts: dict[str, int] = {}
+
+    existing_sprite_files = set()
+    if ENTITY_SPRITES_DIR.exists():
+        existing_sprite_files = {p.stem for p in ENTITY_SPRITES_DIR.glob("*.png")}
 
     for section_name, section in raw.items():
         if not isinstance(section, dict):
@@ -265,10 +274,13 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 f"/assets/{cat['icon_filename']}" if cat["icon_filename"] else f"/assets/{icon_filename}"
             )
 
+            has_sprite = name in existing_sprite_files
+
             catalog.append({
                 "typeId": name,
-                "label": name,
+                "label": entity_name_map.get(name, name),
                 "icon": f"/assets/{icon_filename}",
+                "entitySprite": f"/entity-assets/{name}.png" if has_sprite else None,
                 "category": cat["name"],
                 "categoryId": cat["groupId"],
                 "categoryOrder": cat["groupOrder"],
@@ -278,6 +290,9 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "categoryIcon": category_icon,
                 "width": width * 32,
                 "height": height * 32,
+                "craftingCategories": proto.get("crafting_categories"),
+                "moduleSlots": proto.get("module_slots", 0),
+                "craftingSpeed": proto.get("crafting_speed"),
             })
             entity_type_counts[section_name] = entity_type_counts.get(section_name, 0) + 1
 
@@ -298,12 +313,18 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
 
     categories_found = len(set(e["category"] for e in catalog))
 
+    entity_names = {e["typeId"] for e in catalog}
+    sprite_map = build_entity_sprite_map(raw, entity_names)
+    recipe_result = build_recipe_catalog(raw)
+
     return {
         "total": len(catalog),
         "skipped_no_icon": skipped_no_icon,
         "scanned_sections": scanned_sections,
         "categories_found": categories_found,
         "sections_breakdown": entity_type_counts,
+        "sprites_extracted": len(sprite_map),
+        "recipes_extracted": recipe_result["total"],
     }
 
 

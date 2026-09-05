@@ -19,6 +19,7 @@ app.add_middleware(
 )
 
 app.mount("/assets", StaticFiles(directory="data/cache/sprites"), name="assets")
+app.mount("/entity-assets", StaticFiles(directory="data/cache/entity_sprites"), name="entity-assets")
 
 app.include_router(factories.router)
 app.include_router(mods.router)
