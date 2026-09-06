@@ -42,6 +42,22 @@ FORCE_INCLUDE_TYPES = {
     "unit-spawner",
 }
 
+# Эвристика-заглушка для детекта модов вроде "массового манипулятора" с картинки:
+# такие моды обычно рисуют собственный доп. GUI через скрипт (on_gui_opened),
+# а не декларируют это в прототипе — надёжного признака в дампе нет.
+# Пока ориентируемся на filter_count + характерное имя сущности.
+# Подправить/расширить список подстрок, когда будет точно известен конкретный мод.
+_BULK_INSERTER_NAME_HINTS = (
+    "bulk", "mass", "long-inserter", "long-handed-inserter-mk", "advanced-inserter",
+)
+
+
+def _looks_like_bulk_inserter(name: str, proto: dict) -> bool:
+    if proto.get("filter_count", 0) < 5:
+        return False
+    lowered = name.lower()
+    return any(hint in lowered for hint in _BULK_INSERTER_NAME_HINTS)
+
 
 def run_game_dump() -> Path:
     exe_path = settings.factorio_executable
@@ -206,6 +222,7 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
 
             catalog.append({
                 "typeId": name,
+                "type": section_name,
                 "label": entity_name_map.get(name, name),
                 "icon": f"/assets/{icon_filename}",
                 "entitySprite": f"/entity-assets/{name}.png" if has_sprite else None,
@@ -221,6 +238,11 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "craftingCategories": proto.get("crafting_categories"),
                 "moduleSlots": proto.get("module_slots", 0),
                 "craftingSpeed": proto.get("crafting_speed"),
+                "miningSpeed": proto.get("mining_speed"),
+                "researchingSpeed": proto.get("researching_speed"),
+                "rocketPartsRequired": proto.get("rocket_parts_required"),
+                "filterCount": proto.get("filter_count", 0),
+                "bulkInserterConfig": _looks_like_bulk_inserter(name, proto),
             })
             entity_type_counts[section_name] = entity_type_counts.get(section_name, 0) + 1
 

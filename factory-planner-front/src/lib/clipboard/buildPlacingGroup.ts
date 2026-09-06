@@ -8,12 +8,16 @@ export function buildPlacingGroup(
   const minY = Math.min(...items.map((i) => i.y))
   return items.map((i) => ({
     typeId: i.typeId,
+    type: i.type,
     icon: i.icon,
     label: i.label,
     width: i.width,
     height: i.height,
     offsetX: i.x - minX,
     offsetY: i.y - minY,
+    craftingCategories: i.craftingCategories,
+    moduleSlots: i.moduleSlots,
+    recipe: i.recipe,        // ← добавить
   }))
 }
 

@@ -1,9 +1,18 @@
 import { create } from 'zustand'
 
 export type HotbarItem =
-  | { kind: 'entity'; typeId: string; icon: string; label: string; width: number; height: number }
+  | {
+      kind: 'entity'
+      typeId: string
+      type?: string                 // ← добавить
+      icon: string
+      label: string
+      width: number
+      height: number
+      craftingCategories?: string[] // ← добавить
+      moduleSlots?: number          // ← добавить
+    }
   | { kind: 'blueprint'; factoryId: string }
-
 const ROWS = 10
 const SLOTS_PER_ROW = 10
 

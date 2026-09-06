@@ -4,6 +4,7 @@ import { resolveAssetUrl } from '../lib/api/client'
 
 export interface CatalogEntity {
   typeId: string
+  type: string
   label: string
   icon: string
   entitySprite: string | null
@@ -19,6 +20,11 @@ export interface CatalogEntity {
   craftingCategories: string[] | null
   moduleSlots: number
   craftingSpeed: number | null
+  miningSpeed: number | null
+  researchingSpeed: number | null
+  rocketPartsRequired: number | null
+  filterCount: number
+  bulkInserterConfig: boolean
 }
 
 interface EntityCatalogStore {

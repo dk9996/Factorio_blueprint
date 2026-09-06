@@ -1,6 +1,11 @@
 import { create } from 'zustand'
-import { recipesApi, type Recipe } from '../lib/api/recipes'
+import { recipesApi, type Recipe, type RecipeIngredient } from '../lib/api/recipes'
 import { resolveAssetUrl } from '../lib/api/client'
+
+// ← добавить эту функцию
+function withResolvedStackIcon(stack: RecipeIngredient): RecipeIngredient {
+  return { ...stack, icon: stack.icon ? resolveAssetUrl(stack.icon) : null }
+}
 
 interface RecipeCatalogStore {
   recipes: Recipe[]
@@ -22,12 +27,14 @@ export const useRecipeCatalogStore = create<RecipeCatalogStore>((set) => ({
         ...r,
         icon: r.icon ? resolveAssetUrl(r.icon) : null,
         displayCategoryIcon: r.displayCategoryIcon ? resolveAssetUrl(r.displayCategoryIcon) : null,
+        ingredients: r.ingredients.map(withResolvedStackIcon), // ← добавить
+        results: r.results.map(withResolvedStackIcon),         // ← добавить
       }))
       set({ recipes: resolved, loading: false })
     } catch (err) {
       set({
         loading: false,
-        error: err instanceof Error ? err.message : 'Failed to load recipes',
+        error: err instanceof Error ? err.message : 'Failed to load recipe catalog',
       })
     }
   },

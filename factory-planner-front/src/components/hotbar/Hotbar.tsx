@@ -15,6 +15,7 @@ export function Hotbar() {
   const placing = useCanvasStore((s) => s.placing)
   const setPlacing = useCanvasStore((s) => s.setPlacing)
   const openPicker = useUiStore((s) => s.openPicker)
+  const deleteHoldProgress = useUiStore((s) => s.deleteHoldProgress)
   const openFactoryTab = useTabsStore((s) => s.openFactoryTab)
 
   const [expandedSlot, setExpandedSlot] = useState<0 | 1 | null>(null)
@@ -44,7 +45,20 @@ export function Hotbar() {
       setPlacing(
         isSame
           ? null
-          : { items: [{ typeId: item.typeId, icon: item.icon, label: item.label, width: item.width, height: item.height, offsetX: 0, offsetY: 0 }] },
+          : {
+              items: [{
+                typeId: item.typeId,
+                type: item.type,                        // ← добавить
+                icon: item.icon,
+                label: item.label,
+                width: item.width,
+                height: item.height,
+                offsetX: 0,
+                offsetY: 0,
+                craftingCategories: item.craftingCategories, // ← добавить
+                moduleSlots: item.moduleSlots,               // ← добавить
+              }],
+            },
       )
     } else {
       const factory = factories.find((f) => f.id === item.factoryId)
@@ -121,6 +135,14 @@ export function Hotbar() {
 
   return (
     <div className="hotbar-outer">
+      {deleteHoldProgress !== null && (
+        <div className="hotbar-delete-progress">
+          <div
+            className="hotbar-delete-progress-fill"
+            style={{ width: `${deleteHoldProgress * 100}%` }}
+          />
+        </div>
+      )}
       {expandedSlot !== null && (
         <div className="hotbar-expanded">
           {rows.map((row, idx) => (

@@ -3,6 +3,7 @@ import { create } from 'zustand'
 export interface PlacedEntity {
   id: number
   typeId: string
+  type?: string
   icon: string
   label: string
   x: number
@@ -16,10 +17,12 @@ export interface PlacedEntity {
   recipe?: string | null
   craftingCategories?: string[]
   moduleSlots?: number
+  config?: Record<string, unknown>
 }
 
 export interface PlacingGroupItem {
   typeId: string
+  type?: string
   icon: string
   label: string
   width: number
@@ -28,6 +31,7 @@ export interface PlacingGroupItem {
   offsetY: number
   craftingCategories?: string[]
   moduleSlots?: number
+  recipe?: string | null
 }
 
 export interface PlacingState {
@@ -57,6 +61,7 @@ interface Snapshot {
 
 interface CanvasStore {
   setEntityRecipe: (id: number, recipe: string | null) => void
+  updateEntityConfig: (id: number, patch: Record<string, unknown>) => void
   entities: PlacedEntity[]
   nextId: number
 
@@ -229,6 +234,12 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     setEntityRecipe: (id, recipe) =>
       set((state) => ({
         entities: state.entities.map((e) => (e.id === id ? { ...e, recipe } : e)),
+      })),
+    updateEntityConfig: (id, patch) =>
+      set((state) => ({
+        entities: state.entities.map((e) =>
+          e.id === id ? { ...e, config: { ...e.config, ...patch } } : e,
+        ),
       })),
   }
 })

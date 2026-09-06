@@ -105,6 +105,7 @@ export function EntityPalette() {
             items: [
               {
                 typeId: entity.typeId,
+                type: entity.type,          // ← добавить
                 icon: entity.entitySprite ?? entity.icon,
                 label: entity.label,
                 width: entity.width,
@@ -125,10 +126,13 @@ export function EntityPalette() {
       JSON.stringify({
         kind: 'entity',
         typeId: entity.typeId,
+        type: entity.type,                      // ← добавить
         icon: entity.entitySprite ?? entity.icon,
         label: entity.label,
         width: entity.width,
         height: entity.height,
+        craftingCategories: entity.craftingCategories ?? undefined, // ← добавить
+        moduleSlots: entity.moduleSlots,                             // ← добавить
       }),
     )
   }

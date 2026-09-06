@@ -70,9 +70,30 @@ export function MachineInfoPanel({ entity, onClose }: Props) {
           </div>
 
           {/* ингредиент слева от прогресса / прогресс-бар / выход справа */}
+                    {/* ингредиенты слева от прогресса / прогресс-бар / выход справа */}
           <div className="mm-recipe-row">
-            <div className="mm-slot mm-ingredient-slot mm-slot-empty-warning" title="Ингредиент">
-              {/* иконку конкретного ингредиента добавим отдельно */}
+            <div className="mm-ingredients-group">
+              {currentRecipe && currentRecipe.ingredients.length > 0 ? (
+                currentRecipe.ingredients.map((ing) => (
+                  // TODO(симуляция): пока нет расчёта потока ресурсов, слот всегда
+                  // отображается как "пусто" (красный, без цифры). Когда появится
+                  // реальное количество ресурса в машине — убрать mm-slot-empty-warning
+                  // при amount > 0 и рендерить <span className="mm-slot-amount">{amount}</span>.
+                  <div
+                    key={ing.name}
+                    className="mm-slot mm-ingredient-slot mm-slot-empty-warning"
+                    title={ing.name}
+                  >
+                    {ing.icon && !isBlankIcon(ing.icon) ? (
+                      <img src={ing.icon} alt={ing.name} />
+                    ) : (
+                      <span className="mm-slot-fallback">?</span>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="mm-slot mm-ingredient-slot mm-slot-empty-warning" title="Ингредиент" />
+              )}
             </div>
 
             <div className="mm-progress-track">

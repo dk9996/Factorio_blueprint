@@ -11,8 +11,13 @@ import { buildPlacingGroup } from '../../lib/clipboard/buildPlacingGroup'
 import { useViewportStore } from '../../store/viewportStore'
 import { MachineInfoPanel } from './MachineInfoPanel'
 import { RecipePickerModal } from './RecipePickerModal'
+import { InserterInfoPanel } from './InserterInfoPanel'
+import { LoaderInfoPanel } from './LoaderInfoPanel'
+import { BulkInserterConfigPanel } from './BulkInserterConfigPanel'
+import { useEntityCatalogStore } from '../../store/entityCatalogStore'
 
 const GRID = 32
+const LOADER_TYPES = new Set(['loader', 'loader-1x1'])
 
 export function BlueprintCanvas() {
   const offsetX = useViewportStore((s) => s.offsetX)
@@ -23,6 +28,8 @@ export function BlueprintCanvas() {
 
   const panRef = useRef<{ startX: number; startY: number; origOffsetX: number; origOffsetY: number } | null>(null)
   const selectedEntityIds = useUiStore((s) => s.selectedEntityIds)
+  const lastSelectionSource = useUiStore((s) => s.lastSelectionSource)
+  const selectionToolActive = useUiStore((s) => s.selectionToolActive)
   const selectOnly = useUiStore((s) => s.selectOnly)
   const toggleSelection = useUiStore((s) => s.toggleSelection)
   const setSelection = useUiStore((s) => s.setSelection)
@@ -30,6 +37,7 @@ export function BlueprintCanvas() {
   const clearSelection = useUiStore((s) => s.clearSelection)
 
   const entities = useCanvasStore((s) => s.entities)
+  const catalogEntities = useEntityCatalogStore((s) => s.entities)
   const placing = useCanvasStore((s) => s.placing)
   const setPlacing = useCanvasStore((s) => s.setPlacing)
   const addEntity = useCanvasStore((s) => s.addEntity)
@@ -48,6 +56,9 @@ export function BlueprintCanvas() {
     selectedEntityIds.size === 1
       ? entities.find((e) => e.id === Array.from(selectedEntityIds)[0])
       : undefined
+  const selectedCatalogEntry = selectedEntity
+    ? catalogEntities.find((e) => e.typeId === selectedEntity.typeId)
+    : undefined
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
 
@@ -112,6 +123,7 @@ export function BlueprintCanvas() {
     if (e.button !== 0) return
     if (e.target !== wrapRef.current) return
     if (placing) return
+    if (!selectionToolActive) return
 
     const { x, y } = getLocalPoint(e)
     marqueeShiftRef.current = e.shiftKey
@@ -188,6 +200,7 @@ export function BlueprintCanvas() {
 
     const toPlace = placing.items.map((item) => ({
       typeId: item.typeId,
+      type: item.type,
       icon: item.icon,
       label: item.label,
       x: baseX + item.offsetX,
@@ -196,6 +209,7 @@ export function BlueprintCanvas() {
       height: item.height,
       craftingCategories: item.craftingCategories,
       moduleSlots: item.moduleSlots,
+      recipe: item.recipe,
     }))
 
     const allFit = toPlace.every((p) =>
@@ -279,12 +293,16 @@ export function BlueprintCanvas() {
             setPlacing({
               items: [{
                 typeId: entity.typeId,
+                type: entity.type,
                 icon: entity.icon,
                 label: entity.label,
                 width: entity.width,
                 height: entity.height,
                 offsetX: 0,
                 offsetY: 0,
+                craftingCategories: entity.craftingCategories,
+                moduleSlots: entity.moduleSlots,
+                recipe: entity.recipe,
               }],
             })
             return
@@ -351,6 +369,17 @@ export function BlueprintCanvas() {
       }
     : null
 
+  const canShowEntityPanel = Boolean(selectedEntity) && lastSelectionSource === 'click' && !selectionToolActive
+  const panelKind: 'inserter' | 'loader' | 'machine' | 'stat' | null = !canShowEntityPanel || !selectedEntity
+    ? null
+    : selectedEntity.type === 'inserter'
+      ? 'inserter'
+      : selectedEntity.type && LOADER_TYPES.has(selectedEntity.type)
+        ? 'loader'
+        : selectedEntity.craftingCategories && selectedEntity.craftingCategories.length > 0
+          ? 'machine'
+          : 'stat'
+
   return (
     <div
       className="canvas-wrap"
@@ -405,18 +434,37 @@ export function BlueprintCanvas() {
         {marqueeRect && <div className="marquee-box" style={marqueeRect} />}
       </div>
 
-      {selectedEntity && selectedEntity.craftingCategories && selectedEntity.craftingCategories.length > 0 && (
-        selectedEntity.recipe
-          ? <MachineInfoPanel entity={selectedEntity} onClose={clearSelection} />
-          : (
+      {panelKind === 'inserter' && selectedEntity && (
+        <InserterInfoPanel
+          entity={selectedEntity}
+          filterCount={selectedCatalogEntry?.filterCount ?? 0}
+          onClose={clearSelection}
+          extra={
+            selectedCatalogEntry?.bulkInserterConfig
+              ? <BulkInserterConfigPanel entity={selectedEntity} />
+              : undefined
+          }
+        />
+      )}
+      {panelKind === 'loader' && selectedEntity && (
+        <LoaderInfoPanel
+          entity={selectedEntity}
+          filterCount={selectedCatalogEntry?.filterCount ?? 0}
+          onClose={clearSelection}
+        />
+      )}
+      {panelKind === 'machine' && selectedEntity && (
+        !selectedEntity.recipe
+          ? (
             <RecipePickerModal
-              craftingCategories={selectedEntity.craftingCategories}
+              craftingCategories={selectedEntity.craftingCategories!}
               onPick={(recipeName) => setEntityRecipe(selectedEntity.id, recipeName)}
               onClose={clearSelection}
             />
           )
+          : <MachineInfoPanel entity={selectedEntity} onClose={clearSelection} />
       )}
-      {selectedEntity && (!selectedEntity.craftingCategories || selectedEntity.craftingCategories.length === 0) && (
+      {panelKind === 'stat' && selectedEntity && (
         <StatPopover entity={selectedEntity} />
       )}
 

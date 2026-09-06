@@ -5,6 +5,7 @@ from typing import Literal
 class PlacedEntitySchema(BaseModel):
     id: int
     typeId: str
+    type: str | None = None
     icon: str
     label: str
     x: int
@@ -15,6 +16,10 @@ class PlacedEntitySchema(BaseModel):
     power: float | None = None
     pollution: float | None = None
     throughput: float | None = None
+    recipe: str | None = None
+    craftingCategories: list[str] | None = None
+    moduleSlots: int | None = None
+    config: dict | None = None
 
 
 class FactorySchema(BaseModel):
