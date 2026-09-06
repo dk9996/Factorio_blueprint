@@ -4,7 +4,8 @@ export interface RecipeIngredient {
   name: string
   amount: number
   type: 'item' | 'fluid'
-  icon: string | null   // ← добавить
+  icon: string | null
+  hidden: boolean
 }
 
 export interface Recipe {

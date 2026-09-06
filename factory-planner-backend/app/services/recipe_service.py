@@ -81,6 +81,24 @@ def _resolve_stack_icon(name: str, stack_type: str, items: dict, fluids: dict) -
     return _get_icon_filename(proto)
 
 
+def _is_hidden_stack(name: str, stack_type: str, items: dict, fluids: dict) -> bool:
+    """
+    Настоящий игровой признак "не показывать в обычных списках выбора" —
+    флаг hidden у прототипа предмета/жидкости (у технических/служебных
+    предметов он True, из-за этого они не попадают в стандартные GUI
+    выбора вроде фильтра манипулятора). Прототип неизвестен — считаем
+    видимым по умолчанию, чтобы не терять реальные предметы модов.
+    """
+    source = fluids if stack_type == "fluid" else items
+    proto = source.get(name)
+    if not proto:
+        return False
+    if proto.get("hidden"):
+        return True
+    flags = proto.get("flags") or []
+    return "hidden" in flags
+
+
 def build_recipe_catalog(raw: dict) -> dict:
     items = _build_item_lookup(raw)  # теперь включает gun/ammo/capsule/armor и т.д.
     fluids = raw.get("fluid", {})
@@ -103,6 +121,7 @@ def build_recipe_catalog(raw: dict) -> dict:
                 "amount": ing.get("amount", 1),
                 "type": ing_type,
                 "icon": f"/assets/{ing_icon}" if ing_icon else None,
+                "hidden": _is_hidden_stack(ing_name, ing_type, items, fluids),
             })
 
         results = []
@@ -115,6 +134,7 @@ def build_recipe_catalog(raw: dict) -> dict:
                 "amount": res.get("amount", 1),
                 "type": res_type,
                 "icon": f"/assets/{res_icon}" if res_icon else None,
+                "hidden": _is_hidden_stack(res_name, res_type, items, fluids),
             })
 
         display_cat = resolver.resolve(name)

@@ -866,7 +866,14 @@ body{
 }
 .ins-toggle.on .ins-toggle-knob{ left:15px; background:var(--accent); }
 .ins-filter-slots{ display:flex;gap:4px;flex-shrink:0; }
-.ins-filter-slot{ width:32px;height:32px; cursor:default; }
+.ins-filter-slot{ width:32px;height:32px; cursor:pointer; }
+.ins-filter-slot-clear{
+  position:absolute;top:-4px;right:-4px;
+  width:14px;height:14px;border-radius:50%;
+  background:var(--bad);border:none;color:#fff;
+  font-size:9px;line-height:1;cursor:pointer;padding:0;
+  display:flex;align-items:center;justify-content:center;
+}
 
 .ins-stack-override{ padding-bottom:14px; }
 .ins-stack-row{
