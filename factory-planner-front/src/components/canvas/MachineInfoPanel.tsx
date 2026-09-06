@@ -3,6 +3,7 @@ import type { PlacedEntity } from '../../store/canvasStore'
 import { useCanvasStore } from '../../store/canvasStore'
 import { useRecipeCatalogStore } from '../../store/recipeCatalogStore'
 import { RecipePickerModal } from './RecipePickerModal'
+import { isBlankIcon } from '../../lib/api/client'
 
 interface Props {
   entity: PlacedEntity
@@ -54,7 +55,7 @@ export function MachineInfoPanel({ entity, onClose }: Props) {
               onClick={() => setPickerOpen(true)}
               title="Нажмите, чтобы сменить рецепт"
             >
-              {currentRecipe?.icon ? (
+              {currentRecipe?.icon && !isBlankIcon(currentRecipe.icon) ? (
                 <img src={currentRecipe.icon} alt={currentRecipe.label} className="mm-product-icon" />
               ) : (
                 <span className="mm-product-plus">+</span>

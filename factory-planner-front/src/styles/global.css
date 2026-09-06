@@ -341,7 +341,7 @@ body{
   display:flex;
   flex-direction:column;
   height:100%;
-  min-height:0; /* критично */
+  min-height:0;
 }
 .gm-header{
   display:flex;align-items:center;gap:8px;
@@ -369,7 +369,7 @@ body{
 .gm-body{
   flex:1;
   overflow-y:auto;
-  min-height:0; /* критично */
+  min-height:0;
   padding:10px;
 }
 .gm-grid{
@@ -403,7 +403,10 @@ body{
 .picker-modal{
   width:420px;max-height:70vh;
   border:1px solid var(--line);
-  border-radius:6px
+  border-radius:6px;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
 }
 .picker-modal .gm-footer{
   border-top:1px solid var(--line-soft);
@@ -791,4 +794,8 @@ body{
 .mm-module-row{
   display:flex;gap:4px;
   padding:4px 14px 14px;
+}
+
+.recipe-picker-modal{
+  width:600px;
 }

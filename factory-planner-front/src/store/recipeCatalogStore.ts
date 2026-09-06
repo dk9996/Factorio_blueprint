@@ -21,6 +21,7 @@ export const useRecipeCatalogStore = create<RecipeCatalogStore>((set) => ({
       const resolved = recipes.map((r) => ({
         ...r,
         icon: r.icon ? resolveAssetUrl(r.icon) : null,
+        displayCategoryIcon: r.displayCategoryIcon ? resolveAssetUrl(r.displayCategoryIcon) : null,
       }))
       set({ recipes: resolved, loading: false })
     } catch (err) {

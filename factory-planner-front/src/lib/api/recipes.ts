@@ -15,6 +15,13 @@ export interface Recipe {
   ingredients: RecipeIngredient[]
   results: RecipeIngredient[]
   hidden: boolean
+  displayCategory: string
+  displayCategoryId: string
+  displayCategoryOrder: string
+  displayCategoryIcon: string | null
+  subgroup: string
+  subgroupOrder: string
+  itemOrder: string
 }
 
 export const recipesApi = {

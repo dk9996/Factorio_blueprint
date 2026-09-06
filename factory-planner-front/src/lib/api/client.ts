@@ -13,6 +13,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export function isBlankIcon(icon: string | null | undefined): boolean {
+  return !!icon && icon.endsWith('/blank.png')
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body: unknown) =>
