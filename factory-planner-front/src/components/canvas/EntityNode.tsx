@@ -28,13 +28,16 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
   const catalogEntry = useEntityCatalogStore((s) => s.entities.find((e) => e.typeId === entity.typeId))
 
   // Реальная покадровая анимация — только если у сущности реально нарезана
-  // полоса из нескольких кадров (spriteFrameCount > 1). Иначе — обычная
-  // статичная картинка, как раньше. Подписка на тик условная по значению:
-  // если кадр всего один, всегда выбираем 0 — zustand не перерендерит
-  // компонент на каждый тик впустую.
+  // полоса из нескольких кадров (spriteFrameCount > 1) и известен размер
+  // кадра в пикселях (нужен для честного cover-масштабирования ниже).
+  // Иначе — обычная статичная картинка, как раньше. Подписка на тик
+  // условная по значению: если кадр всего один, всегда выбираем 0 —
+  // zustand не перерендерит компонент на каждый тик впустую.
   const frameCount = catalogEntry?.spriteFrameCount ?? 1
   const lineLength = catalogEntry?.spriteLineLength ?? 1
-  const isAnimated = frameCount > 1 && !!catalogEntry?.entitySprite
+  const frameW = catalogEntry?.spriteFrameWidth ?? null
+  const frameH = catalogEntry?.spriteFrameHeight ?? null
+  const isAnimated = frameCount > 1 && !!catalogEntry?.entitySprite && !!frameW && !!frameH
   const tick = useAnimationStore((s) => (isAnimated ? s.tick : 0))
 
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number; moved: boolean } | null>(null)
@@ -206,6 +209,34 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
   const col = frameIndex % cols
   const row = Math.floor(frameIndex / cols)
 
+  // Настоящий "cover" для спрайт-листа: масштабируем кадр с сохранением
+  // пропорций, чтобы он гарантированно закрыл весь бокс сущности, а
+  // лишнее (если кадр после обрезки полей стал не квадратным — так
+  // бывает у некоторых модов) обрезаем через background-position, а не
+  // растягиваем как раньше (растяжение "в проценты" искажало пропорции,
+  // если кадр не совпадал по форме с квадратной клеткой тайла).
+  // entity.width/height — это невписанные "1×" пиксели (весь канвас
+  // масштабируется общим transform:scale на родителе), так что здесь
+  // можно спокойно считать в абсолютных пикселях без учёта текущего зума.
+  let bgSize = ''
+  let bgPos = ''
+  if (isAnimated) {
+    const coverScale = Math.max(entity.width / frameW!, entity.height / frameH!)
+    const frameDispW = frameW! * coverScale
+    const frameDispH = frameH! * coverScale
+    const sheetW = frameDispW * cols
+    const sheetH = frameDispH * rows
+    // Компенсация несимметричной обрезки полей на бэкенде — центр
+    // обрезанного кадра может не совпадать с центром исходного кадра,
+    // без этой поправки картинка визуально "съезжает" в сторону.
+    const shiftX = (catalogEntry?.spriteShiftX ?? 0) * coverScale
+    const shiftY = (catalogEntry?.spriteShiftY ?? 0) * coverScale
+    const posX = -(col * frameDispW) - (frameDispW - entity.width) / 2 + shiftX
+    const posY = -(row * frameDispH) - (frameDispH - entity.height) / 2 + shiftY
+    bgSize = `${sheetW}px ${sheetH}px`
+    bgPos = `${posX}px ${posY}px`
+  }
+
   return (
     <div
       className={classNames}
@@ -224,10 +255,8 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
           className="entity-sprite entity-sprite-anim"
           style={{
             backgroundImage: `url(${catalogEntry!.entitySprite})`,
-            backgroundSize: `${cols * 100}% ${rows * 100}%`,
-            backgroundPosition: `${cols > 1 ? (col / (cols - 1)) * 100 : 0}% ${
-              rows > 1 ? (row / (rows - 1)) * 100 : 0
-            }%`,
+            backgroundSize: bgSize,
+            backgroundPosition: bgPos,
           }}
         />
       ) : (

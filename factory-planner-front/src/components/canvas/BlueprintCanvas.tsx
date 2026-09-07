@@ -127,6 +127,7 @@ export function BlueprintCanvas() {
   }
 
   const [marquee, setMarquee] = useState<{ startX: number; startY: number; x: number; y: number } | null>(null)
+  const marqueeRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null)
   const marqueeShiftRef = useRef(false)
 
   function getLocalPoint(e: React.MouseEvent) {
@@ -147,56 +148,64 @@ export function BlueprintCanvas() {
 
     const { x, y } = getLocalPoint(e)
     marqueeShiftRef.current = e.shiftKey
-    setMarquee({ startX: x, startY: y, x, y })
+    const initial = { startX: x, startY: y, x, y }
+    marqueeRef.current = initial
+    setMarquee(initial)
     window.addEventListener('mousemove', handleMarqueeMove)
     window.addEventListener('mouseup', handleMarqueeUp)
   }
 
   function handleMarqueeMove(e: MouseEvent) {
-    setMarquee((prev) => {
-      if (!prev || !wrapRef.current) return prev
-      const rect = wrapRef.current.getBoundingClientRect()
-      const screenX = e.clientX - rect.left
-      const screenY = e.clientY - rect.top
-      return {
-        ...prev,
-        x: (screenX - offsetX) / scale,
-        y: (screenY - offsetY) / scale,
-      }
-    })
+    if (!marqueeRef.current || !wrapRef.current) return
+    const rect = wrapRef.current.getBoundingClientRect()
+    const screenX = e.clientX - rect.left
+    const screenY = e.clientY - rect.top
+    const next = {
+      ...marqueeRef.current,
+      x: (screenX - offsetX) / scale,
+      y: (screenY - offsetY) / scale,
+    }
+    marqueeRef.current = next
+    setMarquee(next)
   }
 
   function handleMarqueeUp() {
-    setMarquee((prev) => {
-      if (prev) {
-        const minX = Math.min(prev.startX, prev.x)
-        const maxX = Math.max(prev.startX, prev.x)
-        const minY = Math.min(prev.startY, prev.y)
-        const maxY = Math.max(prev.startY, prev.y)
-
-        const isClick = maxX - minX < 3 && maxY - minY < 3
-
-        if (isClick) {
-          if (!marqueeShiftRef.current) clearSelection()
-        } else {
-          const hitIds = entities
-            .filter(
-              (ent) =>
-                ent.x < maxX &&
-                ent.x + ent.width > minX &&
-                ent.y < maxY &&
-                ent.y + ent.height > minY,
-            )
-            .map((ent) => ent.id)
-
-          if (marqueeShiftRef.current) addToSelection(hitIds)
-          else setSelection(hitIds)
-        }
-      }
-      return null
-    })
+    // Читаем/чистим состояние через ref, а не через функциональный
+    // setMarquee(prev => ...) — вызывать сеттеры ДРУГИХ сторов (setSelection
+    // и т.п.) внутри апдейтера React-состояния нельзя, это и вызывало
+    // "Maximum update depth exceeded".
+    const prev = marqueeRef.current
+    marqueeRef.current = null
+    setMarquee(null)
     window.removeEventListener('mousemove', handleMarqueeMove)
     window.removeEventListener('mouseup', handleMarqueeUp)
+
+    if (!prev) return
+
+    const minX = Math.min(prev.startX, prev.x)
+    const maxX = Math.max(prev.startX, prev.x)
+    const minY = Math.min(prev.startY, prev.y)
+    const maxY = Math.max(prev.startY, prev.y)
+
+    const isClick = maxX - minX < 3 && maxY - minY < 3
+
+    if (isClick) {
+      if (!marqueeShiftRef.current) clearSelection()
+      return
+    }
+
+    const hitIds = entities
+      .filter(
+        (ent) =>
+          ent.x < maxX &&
+          ent.x + ent.width > minX &&
+          ent.y < maxY &&
+          ent.y + ent.height > minY,
+      )
+      .map((ent) => ent.id)
+
+    if (marqueeShiftRef.current) addToSelection(hitIds)
+    else setSelection(hitIds)
   }
 
   function handleCanvasMouseMove(e: React.MouseEvent) {

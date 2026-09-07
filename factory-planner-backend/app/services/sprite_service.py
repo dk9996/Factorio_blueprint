@@ -2,7 +2,7 @@ import json
 import math
 from io import BytesIO
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageChops
 from app.config import settings
 from app.services.mod_resolver import build_mod_sources
 
@@ -135,40 +135,144 @@ ENTITY_SPRITES_OUTPUT_DIR = Path("data/cache/entity_sprites")
 
 def _find_source_file(filename: str) -> bytes | None:
     """
-    Ищет файл ИМЕННО в graphics/entity/ (не во всей graphics/ папке!) —
-    иначе можно случайно найти одноимённый файл из graphics/icons/
-    (UI-иконка вместо настоящего entity-спрайта), как было при первом
-    прогоне: assembling-machine-2.png существует и как иконка (120x64
-    mip-полоса), и как отдельный крупный спрайт в graphics/entity/.
+    filename приходит из дампа как полный путь с префиксом мода вида
+    "__base__/graphics/entity/steel-chest/base.png" или
+    "__modname__/...". Сначала ищем ТОЧНО по этому пути — важно, потому
+    что голое имя файла (например "base.png") у РАЗНЫХ сущностей часто
+    совпадает (особенно у сундуков — steel-chest, active-provider-chest,
+    aai-strongbox и т.д. все называют свой базовый слой "base.png" каждый
+    в своей папке), и поиск по одному basename случайно находил чужой файл.
+    Basename-only поиск (как было раньше) оставлен запасным вариантом на
+    случай нестандартной структуры у некоторых модов.
     """
+    mod_name: str | None = None
+    rel_path = filename
+    if filename.startswith("__") and "__/" in filename:
+        prefix, rel_path = filename.split("__/", 1)
+        mod_name = prefix.strip("_")  # "__base__" -> "base", "__krastorio2__" -> "krastorio2"
+
+    basename = Path(rel_path).name
+
+    # 1) точный путь
+    if mod_name in (None, "base"):
+        candidate = settings.factorio_game_path / "data" / "base" / rel_path
+        if candidate.exists():
+            return candidate.read_bytes()
+    if mod_name in (None, "core"):
+        candidate = settings.factorio_game_path / "data" / "core" / rel_path
+        if candidate.exists():
+            return candidate.read_bytes()
+    if mod_name and mod_name not in ("base", "core"):
+        source = build_mod_sources().get(mod_name)
+        if source:
+            data = source.read_bytes(rel_path)
+            if data:
+                return data
+
+    # 2) запасной вариант — совпадение по ХВОСТУ пути (на случай, если
+    #    префикс не распознался или файл лежит не совсем там, где ждали)
     base_entity_dir = settings.factorio_game_path / "data" / "base" / "graphics" / "entity"
-    if base_entity_dir.exists():
-        for candidate in base_entity_dir.rglob(filename):
-            return candidate.read_bytes()
-
     core_entity_dir = settings.factorio_game_path / "data" / "core" / "graphics" / "entity"
-    if core_entity_dir.exists():
-        for candidate in core_entity_dir.rglob(filename):
-            return candidate.read_bytes()
+    for entity_dir in (base_entity_dir, core_entity_dir):
+        if entity_dir.exists():
+            for candidate in entity_dir.rglob(basename):
+                if str(candidate).replace("\\", "/").endswith(rel_path):
+                    return candidate.read_bytes()
 
-    # для модов — тоже фильтруем по пути, содержащему "graphics/entity" или "entity/"
-    for mod_name, source in build_mod_sources().items():
-        for rel_path in source.list_png_files():
-            if Path(rel_path).name == filename and "entity" in rel_path.lower():
-                data = source.read_bytes(rel_path)
+    for source in build_mod_sources().values():
+        for rp in source.list_png_files():
+            if rp.endswith(rel_path):
+                data = source.read_bytes(rp)
                 if data:
                     return data
 
-    # fallback — если в модовской структуре "entity" не встретилось в пути
-    # (некоторые моды кладут графику по-другому), ищем без фильтра по пути
-    for mod_name, source in build_mod_sources().items():
-        for rel_path in source.list_png_files():
-            if Path(rel_path).name == filename:
-                data = source.read_bytes(rel_path)
+    # 3) последний резерв — старое поведение (совпадение по одному
+    #    basename, без учёта пути) — менее надёжно, но лучше, чем ничего
+    for entity_dir in (base_entity_dir, core_entity_dir):
+        if entity_dir.exists():
+            for candidate in entity_dir.rglob(basename):
+                return candidate.read_bytes()
+
+    for mod_name_iter, source in build_mod_sources().items():
+        for rp in source.list_png_files():
+            if Path(rp).name == basename and "entity" in rp.lower():
+                data = source.read_bytes(rp)
                 if data:
                     return data
 
     return None
+
+
+def _trim_common_margin(
+    sheet: Image.Image, frame_w: int, frame_h: int, cols: int, rows: int, frame_count: int
+) -> tuple[Image.Image, int, int, float, float]:
+    """
+    В некоторых сущностях (например у лент — по 32 кадра анимации) объявленный
+    в данных размер кадра оказывается больше, чем реально занимает рисунок —
+    вокруг остаются пустые прозрачные поля со всех сторон КАЖДОГО кадра.
+    Находим объединение непрозрачных пикселей СРАЗУ ПО ВСЕМ кадрам (не по
+    одному!) и обрезаем только то, что пусто абсолютно во всех кадрах —
+    так нельзя случайно отрезать реальный контент, и кадры анимации не
+    рассинхронизируются друг с другом (у всех отрезается одно и то же поле).
+
+    Возвращает также (shift_x, shift_y) — на сколько исходных пикселей
+    сместился геометрический центр кадра относительно центра ДО обрезки
+    (обрезка почти никогда не симметрична, поэтому наивное центрирование
+    уже обрезанного кадра в клетке визуально "съезжает" — эти значения
+    компенсируют именно это смещение при рендере).
+    """
+    if sheet.mode != "RGBA":
+        sheet = sheet.convert("RGBA")
+
+    accumulator = Image.new("L", (frame_w, frame_h), 0)
+    idx = 0
+    for row in range(rows):
+        for col in range(cols):
+            if idx >= frame_count:
+                break
+            box = (col * frame_w, row * frame_h, (col + 1) * frame_w, (row + 1) * frame_h)
+            frame_alpha = sheet.crop(box).split()[-1]
+            accumulator = ImageChops.lighter(accumulator, frame_alpha)
+            idx += 1
+
+    bbox = accumulator.getbbox()
+    if not bbox or bbox == (0, 0, frame_w, frame_h):
+        return sheet, frame_w, frame_h, 0.0, 0.0  # нечего обрезать (или кадр пуст — не трогаем)
+
+    new_w = bbox[2] - bbox[0]
+    new_h = bbox[3] - bbox[1]
+    if new_w <= 0 or new_h <= 0:
+        return sheet, frame_w, frame_h, 0.0, 0.0
+
+    # Защита от рассинхрона кадров (когда реальный шаг между кадрами в
+    # файле не совпадает с заявленным width/height — тогда мы режем не по
+    # границам кадров, и "объединение" альфы по кривым срезам может дать
+    # то слишком маленький, то слишком большой bbox). Если обрезка хочет
+    # убрать больше половины кадра по любой оси — это подозрительно похоже
+    # на рассинхрон, а не на реальные лишние поля: лучше не трогать кадр,
+    # чем сломать его.
+    if new_w < frame_w * 0.5 or new_h < frame_h * 0.5:
+        return sheet, frame_w, frame_h, 0.0, 0.0
+
+    shift_x = (bbox[0] + new_w / 2) - frame_w / 2
+    shift_y = (bbox[1] + new_h / 2) - frame_h / 2
+
+    trimmed = Image.new("RGBA", (new_w * cols, new_h * rows), (0, 0, 0, 0))
+    idx = 0
+    for row in range(rows):
+        for col in range(cols):
+            if idx >= frame_count:
+                break
+            src_box = (
+                col * frame_w + bbox[0],
+                row * frame_h + bbox[1],
+                col * frame_w + bbox[2],
+                row * frame_h + bbox[3],
+            )
+            trimmed.paste(sheet.crop(src_box), (col * new_w, row * new_h))
+            idx += 1
+
+    return trimmed, new_w, new_h, shift_x, shift_y
 
 
 def crop_entity_sprites(force: bool = False) -> dict:
@@ -206,86 +310,85 @@ def crop_entity_sprites(force: bool = False) -> dict:
             skipped_exists += 1
             continue
 
-        if not layers:
+        # Защита от устаревшего entity_sprites.json старого формата (там
+        # было "entity_name: {..}", теперь "entity_name: [{..}, ...]") —
+        # если формат не сошёлся, пропускаем сущность, а не роняем весь
+        # запрос. Обычно чинится вызовом /api/entities/rebuild перед этим
+        # эндпоинтом (он и пересобирает entity_sprites.json в новом виде).
+        if not isinstance(layers, list) or not layers:
+            errors.append(
+                f"{entity_name}: entity_sprites.json в старом формате — "
+                f"сначала вызови POST /api/entities/rebuild, потом повтори"
+            )
             continue
-
-        # геометрию (размер кадра/кол-во кадров) берём с базового
-        # (первого/нижнего) слоя — у слоёв одной сущности она обычно
-        # идентична, это и есть весь смысл послойной отрисовки
-        base = layers[0]
-        width = base.get("width")
-        height = base.get("height")
-
-        if not width or not height:
-            skipped_no_dims += 1
-            continue
-
-        width = int(round(width))
-        height = int(round(height))
-
-        frame_count = max(1, int(base.get("frame_count") or 1))
-        line_length = int(base.get("line_length") or frame_count) or frame_count
-        cols = min(line_length, frame_count)
-        rows_needed = math.ceil(frame_count / cols)
-        sheet_width = width * cols
-        sheet_height = height * rows_needed
 
         try:
-            composited: Image.Image | None = None
-            saved_frame_count = 1
-            saved_cols = 1
-            layer_errors = 0
-
-            for layer in layers:
-                file_bytes = _find_source_file(layer["filename"])
-                if file_bytes is None:
-                    layer_errors += 1
-                    continue
-
-                with Image.open(BytesIO(file_bytes)) as img:
-                    img.load()
-
-                    if img.width < width or img.height < height:
-                        layer_errors += 1
-                        continue
-
-                    if composited is None:
-                        # решение "полная полоса кадров или один кадр"
-                        # принимается один раз — по базовому слою
-                        if img.width >= sheet_width and img.height >= sheet_height and frame_count > 1:
-                            crop_box = (0, 0, sheet_width, sheet_height)
-                            saved_frame_count = frame_count
-                            saved_cols = cols
-                        else:
-                            crop_box = (0, 0, width, height)
-                            saved_frame_count = 1
-                            saved_cols = 1
-                    else:
-                        crop_box = (0, 0, composited.width, composited.height)
-
-                    layer_img = img.crop(crop_box).convert("RGBA")
-
-                if composited is None:
-                    composited = layer_img
-                else:
-                    if layer_img.size != composited.size:
-                        layer_img = layer_img.resize(composited.size, Image.NEAREST)
-                    composited = Image.alpha_composite(composited, layer_img)
-
-            if composited is None:
-                skipped_size_mismatch += 1
-                if layer_errors:
-                    errors.append(f"{entity_name}: не найден ни один слой ({layer_errors} пропущено)")
+            # ВРЕМЕННЫЙ откат: раньше здесь склеивались все слои
+            # (alpha_composite) в предположении, что каждый слой — это
+            # независимый цветной элемент. На практике часть "слоёв" —
+            # маски/тонировки/подсветка, которые так не рендерятся, и
+            # слепая склейка портила спрайт. Пока используем только
+            # первый валидный слой — как было в изначальной, рабочей
+            # версии, просто с уже исправленным наследованием
+            # frame_count/line_length.
+            base = layers[0]
+            if not isinstance(base, dict):
+                errors.append(f"{entity_name}: некорректные данные слоя")
                 continue
 
-            composited.save(out_path)
-            processed += 1
+            width = base.get("width")
+            height = base.get("height")
+
+            if not width or not height:
+                skipped_no_dims += 1
+                continue
+
+            width = int(round(width))
+            height = int(round(height))
+
+            frame_count = max(1, int(base.get("frame_count") or 1))
+            line_length = int(base.get("line_length") or frame_count) or frame_count
+            cols = min(line_length, frame_count)
+            rows_needed = math.ceil(frame_count / cols)
+            sheet_width = width * cols
+            sheet_height = height * rows_needed
+
+            file_bytes = _find_source_file(base["filename"])
+            if file_bytes is None:
+                errors.append(f"{entity_name}: файл {base['filename']} не найден на диске")
+                continue
+
+            with Image.open(BytesIO(file_bytes)) as img:
+                img.load()
+
+                if img.width < width or img.height < height:
+                    skipped_size_mismatch += 1
+                    continue
+
+                if img.width >= sheet_width and img.height >= sheet_height and frame_count > 1:
+                    cropped = img.crop((0, 0, sheet_width, sheet_height))
+                    saved_frame_count = frame_count
+                    saved_cols = cols
+                    rows_actual = rows_needed
+                else:
+                    cropped = img.crop((0, 0, width, height))
+                    saved_frame_count = 1
+                    saved_cols = 1
+                    rows_actual = 1
+
+                trimmed, saved_width, saved_height, shift_x, shift_y = _trim_common_margin(
+                    cropped, width, height, saved_cols, rows_actual, saved_frame_count
+                )
+                trimmed.save(out_path)
+                processed += 1
 
             frame_meta[entity_name] = {
-                "frameWidth": width,
-                "frameHeight": height,
+                "frameWidth": saved_width,
+                "frameHeight": saved_height,
                 "frameCount": saved_frame_count,
                 "lineLength": saved_cols,
+                "shiftX": shift_x,
+                "shiftY": shift_y,
             }
 
         except Exception as e:

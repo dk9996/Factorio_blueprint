@@ -52,7 +52,7 @@ def _leaf_to_dict(node: dict, inherited: dict) -> dict:
     # заданы на уровне-обёртке над layers, а не на самом layer-листе с
     # filename — поэтому наследуем их от родителей, если на листе их нет.
     return {
-        "filename": node["filename"].rsplit("/", 1)[-1],
+        "filename": node["filename"],
         "width": width,
         "height": height,
         "frame_count": node.get("frame_count", inherited.get("frame_count", 1)),

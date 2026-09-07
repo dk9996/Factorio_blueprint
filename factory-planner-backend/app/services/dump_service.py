@@ -254,6 +254,8 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "spriteFrameHeight": frame_info["frameHeight"] if frame_info else None,
                 "spriteFrameCount": frame_info["frameCount"] if frame_info else None,
                 "spriteLineLength": frame_info["lineLength"] if frame_info else None,
+                "spriteShiftX": frame_info.get("shiftX", 0) if frame_info else 0,
+                "spriteShiftY": frame_info.get("shiftY", 0) if frame_info else 0,
                 "category": cat["name"],
                 "categoryId": cat["groupId"],
                 "categoryOrder": cat["groupOrder"],
