@@ -14,10 +14,23 @@ import { RecipePickerModal } from './RecipePickerModal'
 import { InserterInfoPanel } from './InserterInfoPanel'
 import { LoaderInfoPanel } from './LoaderInfoPanel'
 import { BulkInserterConfigPanel } from './BulkInserterConfigPanel'
+import { MiningDrillInfoPanel } from './MiningDrillInfoPanel'
+import { LabInfoPanel } from './LabInfoPanel'
+import { RocketSiloInfoPanel } from './RocketSiloInfoPanel'
+import { RoboportInfoPanel } from './RoboportInfoPanel'
 import { useEntityCatalogStore } from '../../store/entityCatalogStore'
+import { useAnimationStore } from '../../store/animationStore'
 
 const GRID = 32
-const LOADER_TYPES = new Set(['loader', 'loader-1x1'])
+const TYPE_PANEL_MAP: Record<string, 'inserter' | 'loader' | 'mining-drill' | 'lab' | 'rocket-silo' | 'roboport'> = {
+  'inserter': 'inserter',
+  'loader': 'loader',
+  'loader-1x1': 'loader',
+  'mining-drill': 'mining-drill',
+  'lab': 'lab',
+  'rocket-silo': 'rocket-silo',
+  'roboport': 'roboport',
+}
 
 export function BlueprintCanvas() {
   const offsetX = useViewportStore((s) => s.offsetX)
@@ -61,6 +74,13 @@ export function BlueprintCanvas() {
     : undefined
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
+
+  // Общий тик анимации спрайтов — один интервал на всё приложение,
+  // читается всеми EntityNode через useAnimationStore.
+  useEffect(() => {
+    const id = window.setInterval(() => useAnimationStore.getState().advance(), 125)
+    return () => window.clearInterval(id)
+  }, [])
 
   function handleCanvasMouseDownForPan(e: React.MouseEvent) {
     if (e.button !== 2) return // только правая кнопка
@@ -370,15 +390,11 @@ export function BlueprintCanvas() {
     : null
 
   const canShowEntityPanel = Boolean(selectedEntity) && lastSelectionSource === 'click' && !selectionToolActive
-  const panelKind: 'inserter' | 'loader' | 'machine' | 'stat' | null = !canShowEntityPanel || !selectedEntity
+  type PanelKind = 'inserter' | 'loader' | 'mining-drill' | 'lab' | 'rocket-silo' | 'roboport' | 'machine' | 'stat' | null
+  const panelKind: PanelKind = !canShowEntityPanel || !selectedEntity
     ? null
-    : selectedEntity.type === 'inserter'
-      ? 'inserter'
-      : selectedEntity.type && LOADER_TYPES.has(selectedEntity.type)
-        ? 'loader'
-        : selectedEntity.craftingCategories && selectedEntity.craftingCategories.length > 0
-          ? 'machine'
-          : 'stat'
+    : TYPE_PANEL_MAP[selectedEntity.type ?? ''] ??
+      (selectedEntity.craftingCategories && selectedEntity.craftingCategories.length > 0 ? 'machine' : 'stat')
 
   return (
     <div
@@ -450,6 +466,34 @@ export function BlueprintCanvas() {
         <LoaderInfoPanel
           entity={selectedEntity}
           filterCount={selectedCatalogEntry?.filterCount ?? 0}
+          onClose={clearSelection}
+        />
+      )}
+      {panelKind === 'mining-drill' && selectedEntity && (
+        <MiningDrillInfoPanel
+          entity={selectedEntity}
+          catalogEntry={selectedCatalogEntry}
+          onClose={clearSelection}
+        />
+      )}
+      {panelKind === 'lab' && selectedEntity && (
+        <LabInfoPanel
+          entity={selectedEntity}
+          catalogEntry={selectedCatalogEntry}
+          onClose={clearSelection}
+        />
+      )}
+      {panelKind === 'rocket-silo' && selectedEntity && (
+        <RocketSiloInfoPanel
+          entity={selectedEntity}
+          catalogEntry={selectedCatalogEntry}
+          onClose={clearSelection}
+        />
+      )}
+      {panelKind === 'roboport' && selectedEntity && (
+        <RoboportInfoPanel
+          entity={selectedEntity}
+          catalogEntry={selectedCatalogEntry}
           onClose={clearSelection}
         />
       )}

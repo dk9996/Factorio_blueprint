@@ -97,11 +97,7 @@ def _extract_icon_filename(prototype: dict) -> str | None:
     return icon_path.rsplit("/", 1)[-1]
 
 
-def _collision_box_to_size(prototype: dict) -> tuple[int, int]:
-    box = prototype.get("collision_box")
-    if not box:
-        return (1, 1)
-
+def _box_to_size(box) -> tuple[int, int] | None:
     try:
         if isinstance(box, (list, tuple)) and len(box) == 2:
             (x1, y1), (x2, y2) = box
@@ -123,6 +119,25 @@ def _collision_box_to_size(prototype: dict) -> tuple[int, int]:
     except (ValueError, TypeError, IndexError, KeyError):
         pass
 
+    return None
+
+
+def _collision_box_to_size(prototype: dict) -> tuple[int, int]:
+    """
+    Реальный визуальный "хитбокс" сущности в игре — это selection_box
+    (именно он определяет размер при наведении/размещении и подсветке),
+    а не collision_box (он может быть меньше — например у рельсовых
+    сигналов, труб-в-землю и т.п. — потому что влияет на физику/путь,
+    а не на то, сколько тайлов реально занимает постройка визуально).
+    Поэтому сперва пробуем selection_box, и только если его нет —
+    откатываемся на collision_box, а затем на 1×1.
+    """
+    size = _box_to_size(prototype.get("selection_box"))
+    if size:
+        return size
+    size = _box_to_size(prototype.get("collision_box"))
+    if size:
+        return size
     return (1, 1)
 
 
@@ -188,6 +203,14 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
     if ENTITY_SPRITES_DIR.exists():
         existing_sprite_files = {p.stem for p in ENTITY_SPRITES_DIR.glob("*.png")}
 
+    entity_sprite_frames: dict = {}
+    frames_meta_path = ENTITY_SPRITES_DIR.parent / "entity_sprite_frames.json"
+    if frames_meta_path.exists():
+        try:
+            entity_sprite_frames = json.loads(frames_meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            entity_sprite_frames = {}
+
     for section_name, section in raw.items():
         if not isinstance(section, dict):
             continue
@@ -219,6 +242,7 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
             )
 
             has_sprite = name in existing_sprite_files
+            frame_info = entity_sprite_frames.get(name)
 
             catalog.append({
                 "typeId": name,
@@ -226,6 +250,10 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "label": entity_name_map.get(name, name),
                 "icon": f"/assets/{icon_filename}",
                 "entitySprite": f"/entity-assets/{name}.png" if has_sprite else None,
+                "spriteFrameWidth": frame_info["frameWidth"] if frame_info else None,
+                "spriteFrameHeight": frame_info["frameHeight"] if frame_info else None,
+                "spriteFrameCount": frame_info["frameCount"] if frame_info else None,
+                "spriteLineLength": frame_info["lineLength"] if frame_info else None,
                 "category": cat["name"],
                 "categoryId": cat["groupId"],
                 "categoryOrder": cat["groupOrder"],
@@ -243,6 +271,8 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "rocketPartsRequired": proto.get("rocket_parts_required"),
                 "filterCount": proto.get("filter_count", 0),
                 "bulkInserterConfig": _looks_like_bulk_inserter(name, proto),
+                "logisticRadius": proto.get("logistic_radius"),
+                "constructionRadius": proto.get("construction_radius"),
             })
             entity_type_counts[section_name] = entity_type_counts.get(section_name, 0) + 1
 

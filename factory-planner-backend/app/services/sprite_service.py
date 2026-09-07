@@ -1,3 +1,5 @@
+import json
+import math
 from io import BytesIO
 from pathlib import Path
 from PIL import Image
@@ -171,60 +173,127 @@ def _find_source_file(filename: str) -> bytes | None:
 
 def crop_entity_sprites(force: bool = False) -> dict:
     """
-    Нарезает по ОДНОМУ представительному кадру (первый кадр, первое
-    направление) для каждой сущности из entity_sprites.json — используя
-    точные width/height/line_length, а не угадывание.
+    Нарезает для каждой сущности из entity_sprites.json полосу кадров анимации
+    (первое направление, все frame_count кадров, разложенные по line_length
+    в ряду — как они лежат в исходном листе Factorio), СКЛЕИВАЯ все слои
+    сущности (basic + детали и т.п., если их несколько) в одно изображение
+    через alpha-композицию — раньше брался только первый слой. Метаданные
+    раскладки сохраняются в data/cache/entity_sprite_frames.json, чтобы
+    фронт мог покадрово анимировать через CSS background-position/steps().
+    Если исходный файл меньше, чем нужно для полной полосы — откатываемся
+    на один кадр (как раньше), чтобы не вырезать мусор.
     """
     ENTITY_SPRITES_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    sprite_map = get_entity_sprite_map()
+    sprite_map = get_entity_sprite_map()  # entity_name -> list[layer_meta]
 
     processed = 0
     skipped_no_dims = 0
     skipped_size_mismatch = 0
     skipped_exists = 0
     errors: list[str] = []
+    frame_meta: dict[str, dict] = {}
 
-    for entity_name, meta in sprite_map.items():
+    frames_meta_path = ENTITY_SPRITES_OUTPUT_DIR.parent / "entity_sprite_frames.json"
+    if frames_meta_path.exists() and not force:
+        try:
+            frame_meta = json.loads(frames_meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            frame_meta = {}
+
+    for entity_name, layers in sprite_map.items():
         out_path = ENTITY_SPRITES_OUTPUT_DIR / f"{entity_name}.png"
         if out_path.exists() and not force:
             skipped_exists += 1
             continue
 
-        width = meta.get("width")
-        height = meta.get("height")
+        if not layers:
+            continue
+
+        # геометрию (размер кадра/кол-во кадров) берём с базового
+        # (первого/нижнего) слоя — у слоёв одной сущности она обычно
+        # идентична, это и есть весь смысл послойной отрисовки
+        base = layers[0]
+        width = base.get("width")
+        height = base.get("height")
 
         if not width or not height:
             skipped_no_dims += 1
             continue
 
-        # ширина/высота могут быть дробными у некоторых модов — приводим к int
         width = int(round(width))
         height = int(round(height))
 
-        filename = meta["filename"]
-        file_bytes = _find_source_file(filename)
-        if file_bytes is None:
-            errors.append(f"{entity_name}: файл {filename} не найден на диске")
-            continue
+        frame_count = max(1, int(base.get("frame_count") or 1))
+        line_length = int(base.get("line_length") or frame_count) or frame_count
+        cols = min(line_length, frame_count)
+        rows_needed = math.ceil(frame_count / cols)
+        sheet_width = width * cols
+        sheet_height = height * rows_needed
 
         try:
-            with Image.open(BytesIO(file_bytes)) as img:
-                img.load()
+            composited: Image.Image | None = None
+            saved_frame_count = 1
+            saved_cols = 1
+            layer_errors = 0
 
-                # защитная проверка: если реальный файл меньше заявленного
-                # кадра — данные не совпадают с картинкой, пропускаем,
-                # чтобы не вырезать мусор
-                if img.width < width or img.height < height:
-                    skipped_size_mismatch += 1
+            for layer in layers:
+                file_bytes = _find_source_file(layer["filename"])
+                if file_bytes is None:
+                    layer_errors += 1
                     continue
 
-                # первый кадр — верхний левый угол листа
-                cropped = img.crop((0, 0, width, height))
-                cropped.save(out_path)
-                processed += 1
+                with Image.open(BytesIO(file_bytes)) as img:
+                    img.load()
+
+                    if img.width < width or img.height < height:
+                        layer_errors += 1
+                        continue
+
+                    if composited is None:
+                        # решение "полная полоса кадров или один кадр"
+                        # принимается один раз — по базовому слою
+                        if img.width >= sheet_width and img.height >= sheet_height and frame_count > 1:
+                            crop_box = (0, 0, sheet_width, sheet_height)
+                            saved_frame_count = frame_count
+                            saved_cols = cols
+                        else:
+                            crop_box = (0, 0, width, height)
+                            saved_frame_count = 1
+                            saved_cols = 1
+                    else:
+                        crop_box = (0, 0, composited.width, composited.height)
+
+                    layer_img = img.crop(crop_box).convert("RGBA")
+
+                if composited is None:
+                    composited = layer_img
+                else:
+                    if layer_img.size != composited.size:
+                        layer_img = layer_img.resize(composited.size, Image.NEAREST)
+                    composited = Image.alpha_composite(composited, layer_img)
+
+            if composited is None:
+                skipped_size_mismatch += 1
+                if layer_errors:
+                    errors.append(f"{entity_name}: не найден ни один слой ({layer_errors} пропущено)")
+                continue
+
+            composited.save(out_path)
+            processed += 1
+
+            frame_meta[entity_name] = {
+                "frameWidth": width,
+                "frameHeight": height,
+                "frameCount": saved_frame_count,
+                "lineLength": saved_cols,
+            }
 
         except Exception as e:
             errors.append(f"{entity_name}: {e}")
+
+    frames_meta_path.write_text(
+        json.dumps(frame_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     return {
         "processed": processed,

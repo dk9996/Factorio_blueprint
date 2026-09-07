@@ -17,10 +17,8 @@ type Mode = 'import' | 'export' | 'save' | null
 export function ImportExportPanel() {
   const activeTab = useTabsStore((s) => s.getActiveTab())
   const attachFactoryToActiveTab = useTabsStore((s) => s.attachFactoryToActiveTab)
-  const renameActiveTab = useTabsStore((s) => s.renameActiveTab)
   const markTabSaved = useTabsStore((s) => s.markTabSaved)
   const activeTabId = useTabsStore((s) => s.activeTabId)
-  const activeId = useFactoryStore((s) => s.activeId)
   const updateFactory = useFactoryStore((s) => s.updateFactory)
   const [updating, setUpdating] = useState(false)
 

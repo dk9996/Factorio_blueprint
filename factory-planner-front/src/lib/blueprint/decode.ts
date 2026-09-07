@@ -7,6 +7,7 @@ import type { BlueprintWrapper } from '../../types/blueprint'
  */
 export function decodeBlueprint(bpString: string): BlueprintWrapper {
   const versionByte = bpString[0]
+  void versionByte // пока не используется, но пригодится, если Factorio сменит формат в будущих версиях
   const base64Part = bpString.slice(1)
 
   const binary = atob(base64Part)
@@ -17,7 +18,4 @@ export function decodeBlueprint(bpString: string): BlueprintWrapper {
 
   const jsonString = pako.inflate(bytes, { to: 'string' })
   return JSON.parse(jsonString) as BlueprintWrapper
-
-  // versionByte пока не используется, но пригодится
-  // если Factorio сменит формат в будущих версиях
 }

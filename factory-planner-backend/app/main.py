@@ -18,6 +18,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+Path("data/cache/sprites").mkdir(parents=True, exist_ok=True)
+Path("data/cache/entity_sprites").mkdir(parents=True, exist_ok=True)
+
 app.mount("/assets", StaticFiles(directory="data/cache/sprites"), name="assets")
 app.mount("/entity-assets", StaticFiles(directory="data/cache/entity_sprites"), name="entity-assets")
 

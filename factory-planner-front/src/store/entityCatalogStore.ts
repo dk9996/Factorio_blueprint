@@ -25,6 +25,12 @@ export interface CatalogEntity {
   rocketPartsRequired: number | null
   filterCount: number
   bulkInserterConfig: boolean
+  logisticRadius: number | null
+  constructionRadius: number | null
+  spriteFrameWidth: number | null
+  spriteFrameHeight: number | null
+  spriteFrameCount: number | null
+  spriteLineLength: number | null
 }
 
 interface EntityCatalogStore {

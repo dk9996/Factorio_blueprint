@@ -3,6 +3,8 @@ import type { PlacedEntity } from '../../store/canvasStore'
 import { useCanvasStore } from '../../store/canvasStore'
 import { useUiStore } from '../../store/uiStore'
 import { useRecipeClipboardStore } from '../../store/recipeClipboardStore'
+import { useEntityCatalogStore } from '../../store/entityCatalogStore'
+import { useAnimationStore } from '../../store/animationStore'
 
 interface Props {
   entity: PlacedEntity
@@ -23,6 +25,17 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
   const setDeleteHoldProgress = useUiStore((s) => s.setDeleteHoldProgress)
   const copyRecipeToClipboard = useRecipeClipboardStore((s) => s.copy)
   const recipeClipboardEntry = useRecipeClipboardStore((s) => s.entry)
+  const catalogEntry = useEntityCatalogStore((s) => s.entities.find((e) => e.typeId === entity.typeId))
+
+  // Реальная покадровая анимация — только если у сущности реально нарезана
+  // полоса из нескольких кадров (spriteFrameCount > 1). Иначе — обычная
+  // статичная картинка, как раньше. Подписка на тик условная по значению:
+  // если кадр всего один, всегда выбираем 0 — zustand не перерендерит
+  // компонент на каждый тик впустую.
+  const frameCount = catalogEntry?.spriteFrameCount ?? 1
+  const lineLength = catalogEntry?.spriteLineLength ?? 1
+  const isAnimated = frameCount > 1 && !!catalogEntry?.entitySprite
+  const tick = useAnimationStore((s) => (isAnimated ? s.tick : 0))
 
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number; moved: boolean } | null>(null)
   const deleteHoldRef = useRef<{ raf: number } | null>(null)
@@ -187,6 +200,12 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
     .filter(Boolean)
     .join(' ')
 
+  const cols = isAnimated ? Math.min(lineLength, frameCount) : 1
+  const rows = isAnimated ? Math.ceil(frameCount / cols) : 1
+  const frameIndex = isAnimated ? tick % frameCount : 0
+  const col = frameIndex % cols
+  const row = Math.floor(frameIndex / cols)
+
   return (
     <div
       className={classNames}
@@ -200,7 +219,27 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
       onMouseDown={handleMouseDown}
       onClick={(e) => e.stopPropagation()}
     >
-      <img src={entity.icon} alt={entity.label} className="entity-sprite" />
+      {isAnimated ? (
+        <div
+          className="entity-sprite entity-sprite-anim"
+          style={{
+            backgroundImage: `url(${catalogEntry!.entitySprite})`,
+            backgroundSize: `${cols * 100}% ${rows * 100}%`,
+            backgroundPosition: `${cols > 1 ? (col / (cols - 1)) * 100 : 0}% ${
+              rows > 1 ? (row / (rows - 1)) * 100 : 0
+            }%`,
+          }}
+        />
+      ) : (
+        // Берём картинку из свежего каталога, а не из entity.icon —
+        // у сущностей, размещённых до появления/обновления спрайта, это
+        // поле "запечено" в момент установки и не подтягивает новые данные.
+        <img
+          src={catalogEntry?.entitySprite ?? catalogEntry?.icon ?? entity.icon}
+          alt={entity.label}
+          className="entity-sprite"
+        />
+      )}
       {selected && (
         <div className="dim-tag" style={{ top: -24, left: 0 }}>
           {entity.width / 32} × {entity.height / 32}
