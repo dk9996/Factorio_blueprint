@@ -29,8 +29,7 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
 
   // Реальная покадровая анимация — только если у сущности реально нарезана
   // полоса из нескольких кадров (spriteFrameCount > 1) и известен размер
-  // кадра в пикселях (нужен для честного cover-масштабирования ниже).
-  // Иначе — обычная статичная картинка, как раньше. Подписка на тик
+  // кадра в пикселях. Иначе — обычная статичная картинка. Подписка на тик
   // условная по значению: если кадр всего один, всегда выбираем 0 —
   // zustand не перерендерит компонент на каждый тик впустую.
   const frameCount = catalogEntry?.spriteFrameCount ?? 1
@@ -209,33 +208,26 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
   const col = frameIndex % cols
   const row = Math.floor(frameIndex / cols)
 
-  // Настоящий "cover" для спрайт-листа: масштабируем кадр с сохранением
-  // пропорций, чтобы он гарантированно закрыл весь бокс сущности, а
-  // лишнее (если кадр после обрезки полей стал не квадратным — так
-  // бывает у некоторых модов) обрезаем через background-position, а не
-  // растягиваем как раньше (растяжение "в проценты" искажало пропорции,
-  // если кадр не совпадал по форме с квадратной клеткой тайла).
-  // entity.width/height — это невписанные "1×" пиксели (весь канвас
-  // масштабируется общим transform:scale на родителе), так что здесь
-  // можно спокойно считать в абсолютных пикселях без учёта текущего зума.
-  let bgSize = ''
-  let bgPos = ''
-  if (isAnimated) {
-    const coverScale = Math.max(entity.width / frameW!, entity.height / frameH!)
-    const frameDispW = frameW! * coverScale
-    const frameDispH = frameH! * coverScale
-    const sheetW = frameDispW * cols
-    const sheetH = frameDispH * rows
-    // Компенсация несимметричной обрезки полей на бэкенде — центр
-    // обрезанного кадра может не совпадать с центром исходного кадра,
-    // без этой поправки картинка визуально "съезжает" в сторону.
-    const shiftX = (catalogEntry?.spriteShiftX ?? 0) * coverScale
-    const shiftY = (catalogEntry?.spriteShiftY ?? 0) * coverScale
-    const posX = -(col * frameDispW) - (frameDispW - entity.width) / 2 + shiftX
-    const posY = -(row * frameDispH) - (frameDispH - entity.height) / 2 + shiftY
-    bgSize = `${sheetW}px ${sheetH}px`
-    bgPos = `${posX}px ${posY}px`
-  }
+  // Настоящий игровой масштаб, а не "подгонка под клетку": в Factorio
+  // спрайт сущности рисуется своим естественным размером
+  // (frameWidth × scale, frameHeight × scale — 1 тайл = 32px при scale=1)
+  // и МОЖЕТ выступать за пределы хитбокса на соседние клетки (сундуки,
+  // печи и т.п. так всегда и выглядят в самой игре). Хитбокс/клик-зона
+  // (entity.width/height) при этом не меняется — выступ чисто визуальный.
+  const scale = catalogEntry?.spriteScale ?? 1
+  const hasSpriteDims = !!frameW && !!frameH
+  const dispW = hasSpriteDims ? frameW! * scale : entity.width
+  const dispH = hasSpriteDims ? frameH! * scale : entity.height
+
+  // Суммарное смещение спрайта относительно центра хитбокса:
+  // игровой shift (в тайлах, из данных Factorio) + наша компенсация
+  // несимметричной обрезки полей (в исходных пикселях кадра, тоже
+  // домноженная на scale, чтобы быть в одних единицах с dispW/dispH).
+  const offsetX = (catalogEntry?.spriteGameShiftX ?? 0) * 32 + (catalogEntry?.spriteShiftX ?? 0) * scale
+  const offsetY = (catalogEntry?.spriteGameShiftY ?? 0) * 32 + (catalogEntry?.spriteShiftY ?? 0) * scale
+
+  const spriteLeft = entity.width / 2 - dispW / 2 + offsetX
+  const spriteTop = entity.height / 2 - dispH / 2 + offsetY
 
   return (
     <div
@@ -246,6 +238,10 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
         top: entity.y,
         width: entity.width,
         height: entity.height,
+        // Сущности ниже на канвасе рисуются поверх тех, что выше — как
+        // в игре, когда выступающий верх сундука/машины выглядывает
+        // из-за соседа сверху, а не наоборот.
+        zIndex: Math.round(entity.y),
       }}
       onMouseDown={handleMouseDown}
       onClick={(e) => e.stopPropagation()}
@@ -254,9 +250,14 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
         <div
           className="entity-sprite entity-sprite-anim"
           style={{
+            position: 'absolute',
+            left: spriteLeft,
+            top: spriteTop,
+            width: dispW,
+            height: dispH,
             backgroundImage: `url(${catalogEntry!.entitySprite})`,
-            backgroundSize: bgSize,
-            backgroundPosition: bgPos,
+            backgroundSize: `${dispW * cols}px ${dispH * rows}px`,
+            backgroundPosition: `${-col * dispW}px ${-row * dispH}px`,
           }}
         />
       ) : (
@@ -267,6 +268,13 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
           src={catalogEntry?.entitySprite ?? catalogEntry?.icon ?? entity.icon}
           alt={entity.label}
           className="entity-sprite"
+          style={{
+            position: 'absolute',
+            left: spriteLeft,
+            top: spriteTop,
+            width: dispW,
+            height: dispH,
+          }}
         />
       )}
       {selected && (

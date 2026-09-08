@@ -33,6 +33,9 @@ export interface CatalogEntity {
   spriteLineLength: number | null
   spriteShiftX: number
   spriteShiftY: number
+  spriteScale: number
+  spriteGameShiftX: number
+  spriteGameShiftY: number
 }
 
 interface EntityCatalogStore {

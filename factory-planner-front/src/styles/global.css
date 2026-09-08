@@ -135,12 +135,10 @@ body{
 }
 .entity:active{cursor:grabbing;}
 .entity-sprite{
-  width:100%;height:100%;object-fit:cover;
   image-rendering:pixelated;
   pointer-events:none;
 }
 .entity-sprite-anim{
-  width:100%;height:100%;
   background-repeat:no-repeat;
   image-rendering:pixelated;
   pointer-events:none;

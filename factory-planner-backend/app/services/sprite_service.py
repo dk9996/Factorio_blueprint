@@ -153,15 +153,24 @@ def _find_source_file(filename: str) -> bytes | None:
 
     basename = Path(rel_path).name
 
-    # 1) точный путь
-    if mod_name in (None, "base"):
+    # 1) точный путь. mod_name может быть встроенным контentом самой игры
+    #    не только "base"/"core", но и DLC — Space Age поставляется как
+    #    несколько таких же "data/<name>/" папок (data/space-age,
+    #    data/elevated-rails, data/quality и т.п.), поэтому пробуем
+    #    ЛЮБОЕ имя как подпапку data/, а не только base и core.
+    if mod_name:
+        candidate = settings.factorio_game_path / "data" / mod_name / rel_path
+        if candidate.exists():
+            return candidate.read_bytes()
+    else:
         candidate = settings.factorio_game_path / "data" / "base" / rel_path
         if candidate.exists():
             return candidate.read_bytes()
-    if mod_name in (None, "core"):
-        candidate = settings.factorio_game_path / "data" / "core" / rel_path
-        if candidate.exists():
-            return candidate.read_bytes()
+
+    candidate = settings.factorio_game_path / "data" / "core" / rel_path
+    if candidate.exists():
+        return candidate.read_bytes()
+
     if mod_name and mod_name not in ("base", "core"):
         source = build_mod_sources().get(mod_name)
         if source:
@@ -170,10 +179,12 @@ def _find_source_file(filename: str) -> bytes | None:
                 return data
 
     # 2) запасной вариант — совпадение по ХВОСТУ пути (на случай, если
-    #    префикс не распознался или файл лежит не совсем там, где ждали)
-    base_entity_dir = settings.factorio_game_path / "data" / "base" / "graphics" / "entity"
-    core_entity_dir = settings.factorio_game_path / "data" / "core" / "graphics" / "entity"
-    for entity_dir in (base_entity_dir, core_entity_dir):
+    #    префикс не распознался или файл лежит не совсем там, где ждали).
+    #    Перебираем ВСЕ папки внутри data/ (base, core, и любые DLC вроде
+    #    space-age/elevated-rails/quality), а не только base и core.
+    data_dir = settings.factorio_game_path / "data"
+    entity_dirs = [p / "graphics" / "entity" for p in data_dir.iterdir() if p.is_dir()] if data_dir.exists() else []
+    for entity_dir in entity_dirs:
         if entity_dir.exists():
             for candidate in entity_dir.rglob(basename):
                 if str(candidate).replace("\\", "/").endswith(rel_path):
@@ -188,7 +199,7 @@ def _find_source_file(filename: str) -> bytes | None:
 
     # 3) последний резерв — старое поведение (совпадение по одному
     #    basename, без учёта пути) — менее надёжно, но лучше, чем ничего
-    for entity_dir in (base_entity_dir, core_entity_dir):
+    for entity_dir in entity_dirs:
         if entity_dir.exists():
             for candidate in entity_dir.rglob(basename):
                 return candidate.read_bytes()
@@ -275,15 +286,135 @@ def _trim_common_margin(
     return trimmed, new_w, new_h, shift_x, shift_y
 
 
+def _load_layer_frame0(layer: dict) -> Image.Image | None:
+    """Загружает ПЕРВЫЙ кадр слоя как есть (без обрезки полей, без анимации) —
+    используется для статичных декоративных слоёв поверх основного слоя."""
+    width = layer.get("width")
+    height = layer.get("height")
+    if not width or not height:
+        return None
+    width = int(round(width))
+    height = int(round(height))
+    file_bytes = _find_source_file(layer["filename"])
+    if file_bytes is None:
+        return None
+    try:
+        with Image.open(BytesIO(file_bytes)) as img:
+            img.load()
+            if img.width < width or img.height < height:
+                return None
+            return img.crop((0, 0, width, height)).convert("RGBA")
+    except Exception:
+        return None
+
+
+def _composite_layers(
+    primary_sheet: Image.Image,
+    primary_w: int,
+    primary_h: int,
+    primary_cols: int,
+    primary_rows: int,
+    primary_frame_count: int,
+    primary_scale: float,
+    primary_shift: tuple[float, float],
+    secondary_layers: list[dict],
+) -> tuple[Image.Image, int, int, float, float] | str:
+    """
+    Склеивает основной (уже нарезанный/обрезанный, возможно анимированный)
+    слой с дополнительными слоями — каждый кладётся на СВОЁ место по
+    собственным shift/scale относительно центра сущности (а не просто
+    "поверх друг друга", как в прошлой сломанной попытке). Если у доп.
+    слоя тоже есть кадры анимации — берётся только первый кадр (анимация
+    вторичных слоёв — отдельная, более объёмная задача, пока не делаем).
+    Все расчёты — в тайлах (общая система координат вне зависимости от
+    scale конкретного слоя), результат переводится в единый холст с
+    scale=1 (1 тайл = 32px).
+    Возвращает СТРОКУ с причиной, если ничего не склеилось (вместо
+    молчаливого None) — чтобы было видно в диагностике эндпоинта, что
+    именно пошло не так, а не просто "почему-то не сработало".
+    """
+    px, py = primary_shift
+    p_tile_w = primary_w * primary_scale / 32
+    p_tile_h = primary_h * primary_scale / 32
+    bounds = [(px - p_tile_w / 2, py - p_tile_h / 2, px + p_tile_w / 2, py + p_tile_h / 2)]
+
+    loaded_secondary = []
+    load_failures = 0
+    for layer in secondary_layers:
+        frame = _load_layer_frame0(layer)
+        if frame is None:
+            load_failures += 1
+            continue
+        l_scale = layer.get("scale", 1) or 1
+        lsx, lsy = layer.get("shift") or [0, 0]
+        l_tile_w = frame.width * l_scale / 32
+        l_tile_h = frame.height * l_scale / 32
+        bounds.append((lsx - l_tile_w / 2, lsy - l_tile_h / 2, lsx + l_tile_w / 2, lsy + l_tile_h / 2))
+        loaded_secondary.append((frame, l_scale, lsx, lsy, l_tile_w, l_tile_h))
+
+    if not loaded_secondary:
+        return f"ни один доп. слой не загрузился ({load_failures} из {len(secondary_layers)} не найдены/битые)"
+
+    min_x = min(b[0] for b in bounds)
+    min_y = min(b[1] for b in bounds)
+    max_x = max(b[2] for b in bounds)
+    max_y = max(b[3] for b in bounds)
+
+    canvas_w = max(1, round((max_x - min_x) * 32))
+    canvas_h = max(1, round((max_y - min_y) * 32))
+    if canvas_w > 4000 or canvas_h > 4000 or canvas_w * canvas_h * primary_frame_count > 60_000_000:
+        return f"холст вышел слишком большим ({canvas_w}x{canvas_h}px × {primary_frame_count} кадров) — пропущено"
+
+    canvas_center_x = (min_x + max_x) / 2
+    canvas_center_y = (min_y + max_y) / 2
+
+    result = Image.new("RGBA", (canvas_w * primary_cols, canvas_h * primary_rows), (0, 0, 0, 0))
+
+    p_disp_w = max(1, round(primary_w * primary_scale))
+    p_disp_h = max(1, round(primary_h * primary_scale))
+    p_left = round((px - p_tile_w / 2 - min_x) * 32)
+    p_top = round((py - p_tile_h / 2 - min_y) * 32)
+
+    idx = 0
+    for row in range(primary_rows):
+        for col in range(primary_cols):
+            if idx >= primary_frame_count:
+                break
+            frame_box = (col * primary_w, row * primary_h, (col + 1) * primary_w, (row + 1) * primary_h)
+            frame_img = primary_sheet.crop(frame_box).convert("RGBA")
+            if (frame_img.width, frame_img.height) != (p_disp_w, p_disp_h):
+                frame_img = frame_img.resize((p_disp_w, p_disp_h), Image.LANCZOS)
+
+            cell = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+            cell.paste(frame_img, (p_left, p_top), frame_img)
+
+            for frame, l_scale, lsx, lsy, l_tile_w, l_tile_h in loaded_secondary:
+                disp_w = max(1, round(frame.width * l_scale))
+                disp_h = max(1, round(frame.height * l_scale))
+                layer_img = frame if (frame.width, frame.height) == (disp_w, disp_h) else frame.resize(
+                    (disp_w, disp_h), Image.LANCZOS
+                )
+                l_left = round((lsx - l_tile_w / 2 - min_x) * 32)
+                l_top = round((lsy - l_tile_h / 2 - min_y) * 32)
+                cell.paste(layer_img, (l_left, l_top), layer_img)
+
+            result.paste(cell, (col * canvas_w, row * canvas_h))
+            idx += 1
+
+    return result, canvas_w, canvas_h, canvas_center_x, canvas_center_y
+
+
 def crop_entity_sprites(force: bool = False) -> dict:
     """
-    Нарезает для каждой сущности из entity_sprites.json полосу кадров анимации
-    (первое направление, все frame_count кадров, разложенные по line_length
-    в ряду — как они лежат в исходном листе Factorio), СКЛЕИВАЯ все слои
-    сущности (basic + детали и т.п., если их несколько) в одно изображение
-    через alpha-композицию — раньше брался только первый слой. Метаданные
+    Нарезает для каждой сущности из entity_sprites.json полосу кадров
+    анимации ОСНОВНОГО слоя (первое направление, все frame_count кадров),
+    и, если у сущности есть ещё слои (декоративные детали — как антенны,
+    подсветка, зелень у крупных построек), докладывает их на своё место
+    по собственным shift/scale — см. _composite_layers. Слои с анимацией
+    (кроме основного) пока склеиваются только своим первым кадром —
+    собственная анимация вторичных слоёв не поддержана. Метаданные
     раскладки сохраняются в data/cache/entity_sprite_frames.json, чтобы
-    фронт мог покадрово анимировать через CSS background-position/steps().
+    фронт мог покадрово анимировать через CSS background-position.
     Если исходный файл меньше, чем нужно для полной полосы — откатываемся
     на один кадр (как раньше), чтобы не вырезать мусор.
     """
@@ -294,6 +425,8 @@ def crop_entity_sprites(force: bool = False) -> dict:
     skipped_no_dims = 0
     skipped_size_mismatch = 0
     skipped_exists = 0
+    composited = 0
+    composite_skipped: list[str] = []
     errors: list[str] = []
     frame_meta: dict[str, dict] = {}
 
@@ -323,14 +456,10 @@ def crop_entity_sprites(force: bool = False) -> dict:
             continue
 
         try:
-            # ВРЕМЕННЫЙ откат: раньше здесь склеивались все слои
-            # (alpha_composite) в предположении, что каждый слой — это
-            # независимый цветной элемент. На практике часть "слоёв" —
-            # маски/тонировки/подсветка, которые так не рендерятся, и
-            # слепая склейка портила спрайт. Пока используем только
-            # первый валидный слой — как было в изначальной, рабочей
-            # версии, просто с уже исправленным наследованием
-            # frame_count/line_length.
+            # Первый (обычно самый "основной"/анимированный) слой — от него
+            # берём геометрию кадров/анимацию; остальные слои докладываются
+            # позже через _composite_layers по своим собственным shift/scale
+            # (не альфа-склейка вслепую, как в прошлой сломанной версии).
             base = layers[0]
             if not isinstance(base, dict):
                 errors.append(f"{entity_name}: некорректные данные слоя")
@@ -379,16 +508,57 @@ def crop_entity_sprites(force: bool = False) -> dict:
                 trimmed, saved_width, saved_height, shift_x, shift_y = _trim_common_margin(
                     cropped, width, height, saved_cols, rows_actual, saved_frame_count
                 )
-                trimmed.save(out_path)
                 processed += 1
 
+            scale_val = base.get("scale", 1) or 1
+            game_shift = base.get("shift") or [0, 0]
+
+            final_image = trimmed
+            final_w, final_h = saved_width, saved_height
+            final_scale = scale_val
+            final_gsx, final_gsy = game_shift[0], game_shift[1]
+            final_tsx, final_tsy = shift_x, shift_y
+
+            if len(layers) > 1:
+                # компенсация обрезки полей у основного слоя переводится
+                # из исходных пикселей в тайлы, чтобы сложить с родным
+                # игровым shift — дальше все слои считаются в общей
+                # системе координат (тайлах), см. _composite_layers
+                primary_effective_shift = (
+                    game_shift[0] + shift_x * scale_val / 32,
+                    game_shift[1] + shift_y * scale_val / 32,
+                )
+                composite_result = _composite_layers(
+                    trimmed, saved_width, saved_height, saved_cols, rows_actual, saved_frame_count,
+                    scale_val, primary_effective_shift, layers[1:],
+                )
+                if isinstance(composite_result, str):
+                    composite_skipped.append(f"{entity_name}: {composite_result}")
+                else:
+                    final_image, final_w, final_h, final_gsx, final_gsy = composite_result
+                    final_scale = 1
+                    final_tsx, final_tsy = 0.0, 0.0
+                    composited += 1
+
+            final_image.save(out_path)
+
             frame_meta[entity_name] = {
-                "frameWidth": saved_width,
-                "frameHeight": saved_height,
+                "frameWidth": final_w,
+                "frameHeight": final_h,
                 "frameCount": saved_frame_count,
                 "lineLength": saved_cols,
-                "shiftX": shift_x,
-                "shiftY": shift_y,
+                "shiftX": final_tsx,
+                "shiftY": final_tsy,
+                # scale и gameShift* — родные игровые данные (в частности
+                # scale переводит пиксели файла в игровые тайлы: 1 тайл =
+                # 32px при scale=1). Раньше извлекались, но никуда не
+                # передавались — рендер всегда "подгонял под клетку", из-за
+                # чего сущности вроде сундуков, которые в игре специально
+                # рисуются больше своего хитбокса и выступают на соседние
+                # тайлы, обрезались вместо естественного выступа.
+                "scale": final_scale,
+                "gameShiftX": final_gsx,
+                "gameShiftY": final_gsy,
             }
 
         except Exception as e:
@@ -403,6 +573,9 @@ def crop_entity_sprites(force: bool = False) -> dict:
         "skipped_exists": skipped_exists,
         "skipped_no_dims": skipped_no_dims,
         "skipped_size_mismatch": skipped_size_mismatch,
+        "composited": composited,
+        "composite_skipped": composite_skipped[:30],
+        "total_composite_skipped": len(composite_skipped),
         "errors": errors[:30],  # не раздуваем ответ, если ошибок много
         "total_errors": len(errors),
     }
