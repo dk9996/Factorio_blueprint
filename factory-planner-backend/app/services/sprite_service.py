@@ -2,6 +2,7 @@ import json
 import math
 from io import BytesIO
 from pathlib import Path
+import numpy as np
 from PIL import Image, ImageChops
 from app.config import settings
 from app.services.mod_resolver import build_mod_sources
@@ -286,24 +287,87 @@ def _trim_common_margin(
     return trimmed, new_w, new_h, shift_x, shift_y
 
 
+def _paste_additive(base: Image.Image, overlay: Image.Image, pos: tuple) -> None:
+    """
+    Настоящее аддитивное смешивание (как blend_mode: additive в
+    Factorio — используется у светящихся деталей: линз, индикаторов,
+    подсветки механизмов) — складывает RGB поверх уже нарисованного
+    (альфа overlay'я как вес), а не заменяет пиксели как обычная
+    вставка (Image.paste). Меняет base на месте, как и paste.
+    """
+    x, y = pos
+    bw, bh = base.size
+    ow, oh = overlay.size
+    left, top = max(0, x), max(0, y)
+    right, bottom = min(bw, x + ow), min(bh, y + oh)
+    if right <= left or bottom <= top:
+        return
+
+    base_region = base.crop((left, top, right, bottom))
+    overlay_region = overlay.crop((left - x, top - y, right - x, bottom - y))
+
+    base_arr = np.array(base_region, dtype=np.float32)
+    ov_arr = np.array(overlay_region, dtype=np.float32)
+
+    ov_alpha = ov_arr[:, :, 3:4] / 255.0
+    new_rgb = np.clip(base_arr[:, :, :3] + ov_arr[:, :, :3] * ov_alpha, 0, 255)
+    new_alpha = np.clip(base_arr[:, :, 3:4] + ov_arr[:, :, 3:4], 0, 255)
+
+    result_arr = np.concatenate([new_rgb, new_alpha], axis=2).astype(np.uint8)
+    base.paste(Image.fromarray(result_arr, "RGBA"), (left, top))
+
+
+def _apply_tint(img: Image.Image, tint) -> Image.Image:
+    """
+    Применяет tint (цвет тира — например у погрузчиков Krastorio2 маска
+    красится в жёлтый/красный/голубой по уровню) — просто умножает
+    R/G/B каждого пикселя на компоненты tint, альфа не трогается. tint
+    у Factorio бывает в двух форматах: [r,g,b] (0-255 или 0-1) или
+    {"r":..,"g":..,"b":..}; определяем диапазон по максимальному
+    значению компонента.
+    """
+    if not tint:
+        return img
+    if isinstance(tint, dict):
+        r, g, b = tint.get("r", 1), tint.get("g", 1), tint.get("b", 1)
+    elif isinstance(tint, (list, tuple)) and len(tint) >= 3:
+        r, g, b = tint[0], tint[1], tint[2]
+    else:
+        return img
+    if max(r, g, b) > 1:
+        r, g, b = r / 255, g / 255, b / 255
+    img = img.convert("RGBA")
+    r_band, g_band, b_band, a_band = img.split()
+    r_band = r_band.point(lambda x: min(255, round(x * r)))
+    g_band = g_band.point(lambda x: min(255, round(x * g)))
+    b_band = b_band.point(lambda x: min(255, round(x * b)))
+    return Image.merge("RGBA", (r_band, g_band, b_band, a_band))
+
+
 def _load_layer_frame0(layer: dict) -> Image.Image | None:
     """Загружает ПЕРВЫЙ кадр слоя как есть (без обрезки полей, без анимации) —
-    используется для статичных декоративных слоёв поверх основного слоя."""
+    используется для статичных декоративных слоёв поверх основного слоя.
+    Применяет tint слоя, если он задан (см. _apply_tint), и учитывает
+    x/y-смещение (см. комментарий в crop_entity_sprites про direction_in/
+    direction_out погрузчиков Krastorio2 — та же история и здесь)."""
     width = layer.get("width")
     height = layer.get("height")
     if not width or not height:
         return None
     width = int(round(width))
     height = int(round(height))
+    off_x = int(layer.get("x", 0) or 0)
+    off_y = int(layer.get("y", 0) or 0)
     file_bytes = _find_source_file(layer["filename"])
     if file_bytes is None:
         return None
     try:
         with Image.open(BytesIO(file_bytes)) as img:
             img.load()
-            if img.width < width or img.height < height:
+            if img.width < off_x + width or img.height < off_y + height:
                 return None
-            return img.crop((0, 0, width, height)).convert("RGBA")
+            frame = img.crop((off_x, off_y, off_x + width, off_y + height)).convert("RGBA")
+            return _apply_tint(frame, layer.get("tint"))
     except Exception:
         return None
 
@@ -350,7 +414,7 @@ def _composite_layers(
         l_tile_w = frame.width * l_scale / 32
         l_tile_h = frame.height * l_scale / 32
         bounds.append((lsx - l_tile_w / 2, lsy - l_tile_h / 2, lsx + l_tile_w / 2, lsy + l_tile_h / 2))
-        loaded_secondary.append((frame, l_scale, lsx, lsy, l_tile_w, l_tile_h))
+        loaded_secondary.append((frame, l_scale, lsx, lsy, l_tile_w, l_tile_h, bool(layer.get("is_additive"))))
 
     if not loaded_secondary:
         return f"ни один доп. слой не загрузился ({load_failures} из {len(secondary_layers)} не найдены/битые)"
@@ -388,7 +452,7 @@ def _composite_layers(
             cell = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
             cell.paste(frame_img, (p_left, p_top), frame_img)
 
-            for frame, l_scale, lsx, lsy, l_tile_w, l_tile_h in loaded_secondary:
+            for frame, l_scale, lsx, lsy, l_tile_w, l_tile_h, is_additive in loaded_secondary:
                 disp_w = max(1, round(frame.width * l_scale))
                 disp_h = max(1, round(frame.height * l_scale))
                 layer_img = frame if (frame.width, frame.height) == (disp_w, disp_h) else frame.resize(
@@ -396,7 +460,10 @@ def _composite_layers(
                 )
                 l_left = round((lsx - l_tile_w / 2 - min_x) * 32)
                 l_top = round((lsy - l_tile_h / 2 - min_y) * 32)
-                cell.paste(layer_img, (l_left, l_top), layer_img)
+                if is_additive:
+                    _paste_additive(cell, layer_img, (l_left, l_top))
+                else:
+                    cell.paste(layer_img, (l_left, l_top), layer_img)
 
             result.paste(cell, (col * canvas_w, row * canvas_h))
             idx += 1
@@ -481,6 +548,13 @@ def crop_entity_sprites(force: bool = False) -> dict:
             rows_needed = math.ceil(frame_count / cols)
             sheet_width = width * cols
             sheet_height = height * rows_needed
+            # x/y — смещение внутри файла (некоторые спрайты — это ОБЛАСТЬ
+            # общего спрайт-листа, а не файл целиком; например у Krastorio2
+            # погрузчиков direction_in/direction_out лежат в одном файле,
+            # различаясь только "y" — без учёта смещения мы бы всегда брали
+            # верхнюю область файла независимо от того, что реально нужно).
+            off_x = int(base.get("x", 0) or 0)
+            off_y = int(base.get("y", 0) or 0)
 
             file_bytes = _find_source_file(base["filename"])
             if file_bytes is None:
@@ -490,17 +564,17 @@ def crop_entity_sprites(force: bool = False) -> dict:
             with Image.open(BytesIO(file_bytes)) as img:
                 img.load()
 
-                if img.width < width or img.height < height:
+                if img.width < off_x + width or img.height < off_y + height:
                     skipped_size_mismatch += 1
                     continue
 
-                if img.width >= sheet_width and img.height >= sheet_height and frame_count > 1:
-                    cropped = img.crop((0, 0, sheet_width, sheet_height))
+                if img.width >= off_x + sheet_width and img.height >= off_y + sheet_height and frame_count > 1:
+                    cropped = img.crop((off_x, off_y, off_x + sheet_width, off_y + sheet_height))
                     saved_frame_count = frame_count
                     saved_cols = cols
                     rows_actual = rows_needed
                 else:
-                    cropped = img.crop((0, 0, width, height))
+                    cropped = img.crop((off_x, off_y, off_x + width, off_y + height))
                     saved_frame_count = 1
                     saved_cols = 1
                     rows_actual = 1

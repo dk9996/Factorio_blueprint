@@ -8,12 +8,20 @@ ENTITY_SPRITES_CACHE_PATH = Path("data/cache/entity_sprites.json")
 # используется. Каждый путь — цепочка ключей до места, где лежит либо
 # сам "лист" (filename+width+height), либо структура с 'layers'/'animation_set'.
 CANDIDATE_PATHS: list[list[str]] = [
+    ["graphics_set", "idle_animation"],  # турбины/реакторы SE — реальная структура лежит тут, не в animation
+    ["graphics_set", "picture"],  # некоторые построечные сущности (cargo-landing-pad и т.п.) — список тайлов-фрагментов; должен проверяться раньше animation, иначе там же в graphics_set может найтись мелкая декоративная анимация вместо настоящей структуры
     ["graphics_set", "animation"],
     ["graphics_set", "animations"],
+    ["idle_animation"],  # реакторы/генераторы (не под graphics_set)
     ["on_animation"],   # "включённое"/рабочее состояние — обычно самое полное/анимированное
     ["off_animation"],  # запасной вариант — статичное "выключенное" состояние
     ["horizontal_animation"],  # generator-сущности (турбины и т.п.)
     ["vertical_animation"],
+    ["folded_animation"],  # турели в состоянии покоя (самое подходящее для статичного превью)
+    ["prepared_animation"],  # запасной вариант — некоторые турели/проекторы видимы только в "развёрнутом" состоянии
+    ["base_day_sprite"],  # rocket-silo и родственные — реальный корпус, а не technical "hole"/shadow спрайты
+    ["base_picture"],  # некоторые маяки/артиллерия — основная структура отдельным полем, не в animation
+    ["pictures", "picture"],  # некоторые storage-tank-сущности (например длинные трубы SE) прячут структуру ещё на уровень глубже под pictures
     ["pictures"],
     ["picture"],
     ["animation"],
@@ -21,8 +29,8 @@ CANDIDATE_PATHS: list[list[str]] = [
     ["sprite"],
     ["sprites"],
     ["chargable_graphics", "picture"],
-    ["belt_animation_set", "animation_set"],
-    ["structure"],  # некоторые построечные сущности (pipe-to-ground и т.п.)
+    ["structure"],  # корпус/консоль (разделители, погрузчики, подземные конвейеры и т.п.)
+    ["belt_animation_set", "animation_set"],  # запасной вариант — просто лента, без корпуса
 ]
 
 # Поля, которые НЕ должны рассматриваться как основной визуальный слой,
@@ -30,7 +38,7 @@ CANDIDATE_PATHS: list[list[str]] = [
 EXCLUDE_KEY_HINTS = {
     "shadow", "connector", "corpse", "explosion", "particle",
     "remnants", "working_visualisation", "wire", "circuit",
-    "highlight", "radius_visualisation", "platform_picture",
+    "highlight", "visualisation", "platform_picture",
     "hand_base_picture", "hand_open_picture", "hand_closed_picture",
 }
 
@@ -42,17 +50,17 @@ def _is_sprite_leaf(node: dict) -> bool:
 
 def _is_decorative_overlay(node: dict) -> bool:
     """
-    Не основной визуал сущности, а декоративный эффект поверх неё —
-    тень, свечение/подсветка (draw_as_glow/draw_as_light), либо слой с
-    аддитивным блендингом (blend_mode: additive — в Factorio это всегда
-    какой-то световой эффект, а не сама постройка; например у ламп/линз
-    некоторых модовых зданий).
+    Не основной визуал сущности, а служебный эффект поверх неё — тень
+    или подсветка земли под сущностью (draw_as_light — это буквально
+    "рисовать как источник света на тайлах вокруг", не часть картинки
+    самой сущности). draw_as_glow раньше тоже сюда относили — но это
+    неверно: это означает "рисовать, просто особым аддитивным
+    смешиванием" (для светящихся деталей — линз, индикаторов и т.п.) —
+    оно ЧАСТЬ визуала, а не техническая подсветка, поэтому не исключаем.
     """
     return bool(
         node.get("draw_as_shadow", False)
-        or node.get("draw_as_glow", False)
         or node.get("draw_as_light", False)
-        or node.get("blend_mode") == "additive"
     )
 
 
@@ -64,9 +72,36 @@ def _normalize_dimension(value):
     return value
 
 
+def _resolve_size(node: dict) -> tuple:
+    """
+    Определяет (width, height) листа. 'width'/'height' по отдельности —
+    в приоритете (могут быть [normal, hr] — берём normal, см.
+    _normalize_dimension). Если их нет, но есть общий 'size' — он бывает
+    ЛИБО одним числом (сторона квадрата), ЛИБО парой [width, height]
+    (так делают некоторые модовые спрайт-листы, например у 248k-Redux) —
+    раньше оба размера в таком случае ошибочно брали ОДНО и то же первое
+    значение из size, из-за чего реальная высота кадра отличалась от той,
+    что использовалась при нарезке — кадры анимации "плыли"/прыгали.
+    """
+    width = node.get("width")
+    height = node.get("height")
+    size = node.get("size")
+
+    if width is None and height is None and size is not None:
+        if isinstance(size, list):
+            if len(size) >= 2:
+                return size[0], size[1]
+            return (size[0] if size else None), (size[0] if size else None)
+        return size, size
+
+    return (
+        _normalize_dimension(width if width is not None else size),
+        _normalize_dimension(height if height is not None else size),
+    )
+
+
 def _leaf_to_dict(node: dict, inherited: dict) -> dict:
-    width = _normalize_dimension(node.get("width") or node.get("size"))
-    height = _normalize_dimension(node.get("height") or node.get("size"))
+    width, height = _resolve_size(node)
     # Кадры анимации (frame_count/line_length/direction_count) у "слоёных"
     # спрайтов (structure: { layers: [...], frame_count: N, ... }) часто
     # заданы на уровне-обёртке над layers, а не на самом layer-листе с
@@ -85,6 +120,10 @@ def _leaf_to_dict(node: dict, inherited: dict) -> dict:
         "shift": node.get("shift", inherited.get("shift", [0, 0])),
         "scale": node.get("scale", inherited.get("scale", 1)),
         "is_shadow": bool(node.get("draw_as_shadow", False)),
+        "tint": node.get("tint"),
+        "x": node.get("x", 0) or 0,
+        "y": node.get("y", 0) or 0,
+        "is_additive": node.get("blend_mode") == "additive",
     }
 
 
@@ -114,8 +153,7 @@ def _leaf_from_stripes(node: dict, inherited: dict) -> dict | None:
     if not isinstance(first, dict) or not isinstance(first.get("filename"), str):
         return None
 
-    width = _normalize_dimension(node.get("width") or node.get("size"))
-    height = _normalize_dimension(node.get("height") or node.get("size"))
+    width, height = _resolve_size(node)
     if not width or not height:
         return None
 
@@ -132,6 +170,7 @@ def _leaf_from_stripes(node: dict, inherited: dict) -> dict | None:
         "shift": node.get("shift", inherited.get("shift", [0, 0])),
         "scale": node.get("scale", inherited.get("scale", 1)),
         "is_shadow": bool(node.get("draw_as_shadow", False)),
+        "tint": node.get("tint") or first.get("tint"),
     }
 
 
@@ -173,7 +212,13 @@ def _find_first_leaf(node, _depth: int = 0, inherited: dict | None = None):
     return None
 
 
-_DIRECTION_KEYS = ("north", "east", "south", "west", "northeast", "northwest", "southeast", "southwest")
+_DIRECTION_KEYS = (
+    "north", "east", "south", "west",
+    "northeast", "northwest", "southeast", "southwest",
+    "direction_in", "direction_out",  # погрузчики/подземные конвейеры
+)
+
+_DIRECTION_LIKE_KEY_NAMES = set(_DIRECTION_KEYS) | {"up", "down", "left", "right"}
 
 
 def _collect_layers(node, inherited: dict, _depth: int = 0) -> list[dict] | None:
@@ -191,6 +236,19 @@ def _collect_layers(node, inherited: dict, _depth: int = 0) -> list[dict] | None
     if isinstance(node, list):
         if not node:
             return None
+        # Список элементов, у КАЖДОГО из которых есть 'render_layer' —
+        # это несколько СЛОЁВ КОМПОЗИЦИИ (как у cargo-landing-pad:
+        # graphics_set.picture — список групп тайлов для разных проходов
+        # отрисовки), их нужно собрать ВСЕ вместе. Обычный список
+        # вариантов по направлению (не имеющих render_layer) — это
+        # "выбери один", тут по-прежнему берём только первый элемент.
+        if all(isinstance(item, dict) and "render_layer" in item for item in node):
+            collected_from_list: list[dict] = []
+            for item in node:
+                sub_result = _collect_layers(item, inherited, _depth + 1)
+                if sub_result:
+                    collected_from_list.extend(sub_result)
+            return collected_from_list or None
         return _collect_layers(node[0], inherited, _depth + 1)
 
     if not isinstance(node, dict):
@@ -198,14 +256,40 @@ def _collect_layers(node, inherited: dict, _depth: int = 0) -> list[dict] | None
 
     next_inherited = {**inherited, **{k: node[k] for k in _INHERITABLE_KEYS if k in node}}
 
-    layers = node.get("layers")
+    layers = node.get("layers") or node.get("sheets")
     if isinstance(layers, list) and layers:
         collected = []
         for layer in layers:
+            # Элемент списка может сам оборачивать ЕЩЁ один layers/sheets
+            # (двойная вложенность — так собраны "мозаичные" структуры из
+            # нескольких сегментов со своим shift у каждого, например
+            # длинные трубы). Разворачиваем его целиком рекурсивно, а не
+            # берём только первый лист внутри — иначе от всей мозаики
+            # остаётся один случайный кусок вместо полной картины.
+            nested = _collect_layers(layer, next_inherited, _depth + 1)
+            if nested:
+                collected.extend(nested)
+                continue
             leaf = _find_first_leaf(layer, 0, next_inherited)
-            if leaf:
+            # Без реальных width/height слой нечем резать (ни своих, ни
+            # унаследованных от родителя) — пропускаем его, а не тащим
+            # дальше None, который потом уронит обрезку картинки.
+            if leaf and leaf.get("width") and leaf.get("height"):
                 collected.append(leaf)
-        return collected or None
+        if not collected:
+            return None
+        # Слои с аддитивным блендингом (blend_mode: additive — обычно
+        # свечение/подсветка, красится через tint под конкретный вариант)
+        # отодвигаем в конец списка, чтобы "основным" (первым, у него
+        # берутся кадры анимации всей композиции) не оказался случайно
+        # именно такой декоративный слой, если в исходных данных он идёт
+        # раньше настоящей структуры. Среди всех остальных слоёв порядок
+        # НЕ меняем — сортировка стабильна, трогает только положение
+        # аддитивных слоёв, ничего больше (по площади/кол-ву кадров эти
+        # два признака слишком ненадёжны — на разных сущностях реальная
+        # структура оказывается то крупнее, то мельче/статичнее декора).
+        collected.sort(key=lambda l: l.get("is_additive", False))
+        return collected
 
     # Некоторые прототипы (буровые и т.п.) хранят варианты по направлению
     # как ключи словаря (north/east/south/west), и уже ВНУТРИ каждого —
@@ -218,6 +302,47 @@ def _collect_layers(node, inherited: dict, _depth: int = 0) -> list[dict] | None
             result = _collect_layers(sub, next_inherited, _depth + 1)
             if result:
                 return result
+            # Некоторые сущности (SE-трубы и т.п.) держат ещё один уровень
+            # обёртки 'structure' между направлением и самим layers —
+            # без этого мы бы вообще не находили нужное направление через
+            # _collect_layers и проваливались в неструктурированный поиск,
+            # который берёт ПЕРВОЕ попавшееся направление (обычно не то,
+            # что реально соответствует хитбоксу сущности).
+            structure = sub.get("structure")
+            if isinstance(structure, dict):
+                result = _collect_layers(structure, next_inherited, _depth + 1)
+                if result:
+                    return result
+
+    # Некоторые прототипы (например рельсы) хранят набор слоёв не
+    # списком 'layers', а словарём с произвольными именами ключей
+    # (metals/backplates/ties/stone_path/... — каждый самостоятельный
+    # лист, который нужно наложить поверх остальных). Если у узла
+    # НЕСКОЛЬКО (не один) прямых значений сами являются листами —
+    # считаем это тем же случаем и собираем их все. НО: если ключи узла
+    # сами похожи на названия направлений/сторон (north/east/.../up/
+    # down/left/right) — это, скорее всего, варианты "выбери один под
+    # текущий поворот", а не слои для наложения (так устроен, например,
+    # splitter или pipe-to-ground) — тогда эвристику не применяем вообще,
+    # иначе получим наложенные друг на друга все 4 поворота одновременно.
+    if not (set(node.keys()) & _DIRECTION_LIKE_KEY_NAMES):
+        named_leaves = []
+        for key, value in node.items():
+            if any(hint in key.lower() for hint in EXCLUDE_KEY_HINTS):
+                continue
+            if isinstance(value, dict) and _is_sprite_leaf(value) and not _is_decorative_overlay(value):
+                leaf = _leaf_to_dict(value, next_inherited)
+                if leaf.get("width") and leaf.get("height"):
+                    named_leaves.append(("background" in key.lower(), leaf))
+        if len(named_leaves) >= 2:
+            # "Фоновые" слои (по имени ключа — например
+            # stone_path_background у рельсов) должны рисоваться
+            # первыми/снизу, иначе перекрывают собой всё остальное —
+            # именно это давало у рельсов пропавшие шпалы/странную полосу:
+            # фон стоял почти последним в исходном словаре, то есть
+            # рисовался поверх шпал и рельсов, а не под ними.
+            named_leaves.sort(key=lambda pair: (pair[1].get("is_additive", False), not pair[0]))
+            return [leaf for _, leaf in named_leaves]
 
     return None
 
@@ -229,6 +354,96 @@ def _resolve_candidate_path(proto: dict, path: list[str]):
             return None
         node = node[key]
     return node
+
+
+def _resolve_layers_for_path(proto: dict, path: list[str]) -> list[dict] | None:
+    node = _resolve_candidate_path(proto, path)
+    if node is None:
+        return None
+    layers = _collect_layers(node, {})
+    if layers:
+        return layers
+    leaf = _find_first_leaf(node)
+    return [leaf] if leaf else None
+
+
+def _extract_rocket_silo_layers(proto: dict) -> list[dict] | None:
+    """
+    У rocket-silo корпус (base_day_sprite) и створки люка (door_back_
+    sprite/door_front_sprite) — три независимых плоских поля. В покое
+    (обычное превью, ракета не летит) створки закрыты и перекрывают
+    отверстие — именно так силос обычно выглядит в игре, поэтому берём
+    все три вместе: корпус основным слоем, обе створки поверх. hole_
+    sprite (видно только когда люк ОТКРЫТ) сюда сознательно не берём.
+    """
+    base = proto.get("base_day_sprite")
+    back = proto.get("door_back_sprite")
+    front = proto.get("door_front_sprite")
+    if not (isinstance(base, dict) and isinstance(back, dict) and isinstance(front, dict)):
+        return None
+
+    layers = []
+    for node in (base, back, front):
+        leaf = _find_first_leaf(node)
+        if leaf and leaf.get("width") and leaf.get("height"):
+            layers.append(leaf)
+    return layers if len(layers) >= 2 else None
+
+
+def _extract_belt_and_structure(proto: dict) -> list[dict] | None:
+    """
+    У разделителей/подземных конвейеров/погрузчиков корпус (structure) и
+    сама лента (belt_animation_set) — два независимых поля, и в игре они
+    рисуются вместе: лента снизу (движется, красится по тиру), корпус
+    поверх (обычно статичный). У погрузчиков корпус вообще ОДИН И ТОТ ЖЕ
+    файл на все тиры — цвет тира виден только через ленту, просвечивающую
+    в прорезях корпуса. Раньше брали что-то одно (либо голая лента без
+    корпуса, либо одинаково серый корпус без цвета тира у погрузчиков) —
+    теперь собираем оба вместе как основной (лента, анимация) + доп. слой
+    (корпус) через уже готовую композицию слоёв.
+    """
+    belt_layers = _resolve_layers_for_path(proto, ["belt_animation_set", "animation_set"])
+    structure_layers = _resolve_layers_for_path(proto, ["structure"])
+    if not belt_layers or not structure_layers:
+        return None
+    return belt_layers + structure_layers
+
+
+def _extract_animation_list_layers(proto: dict) -> list[dict] | None:
+    """
+    Современная структура graphics_set.animation_list (маяки и похожие
+    сущности) — это список ОБЁРТОК {render_layer, always_draw,
+    animation}, где реальный спрайт лежит на уровень глубже, внутри
+    animation. Обычный обход не ныряет через этот доп. уровень и находит
+    только ПЕРВЫЙ попавшийся кусок (например только нижнюю часть маяка,
+    без вращающейся верхушки — та лежит в отдельном элементе списка).
+    Берём все элементы с always_draw=true (это и есть основные,
+    постоянно видимые части — база + верхушка); элементы с
+    always_draw=false обычно альтернативные версии одного и того же
+    мигающего огонька под разный tint — не нужны для статичного превью.
+    """
+    gs = proto.get("graphics_set")
+    if not isinstance(gs, dict):
+        return None
+    items = gs.get("animation_list")
+    if not isinstance(items, list) or not items:
+        return None
+
+    collected: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("always_draw") is False:
+            continue
+        anim = item.get("animation")
+        if anim is None:
+            continue
+        sub = _collect_layers(anim, {})
+        if sub:
+            collected.extend(sub)
+        else:
+            leaf = _find_first_leaf(anim)
+            if leaf:
+                collected.append(leaf)
+    return collected or None
 
 
 def _extract_base_layers(proto: dict) -> list[dict] | None:
@@ -301,11 +516,23 @@ def extract_sprite_layers(proto: dict) -> list[dict] | None:
     из-за чего такие сущности раньше показывали только голую статичную
     базу без реальной механики).
     """
-    layers = _extract_base_layers(proto)
+    layers = (
+        _extract_belt_and_structure(proto)
+        or _extract_rocket_silo_layers(proto)
+        or _extract_animation_list_layers(proto)
+        or _extract_base_layers(proto)
+    )
     extra = _find_working_visualisation_layers(proto)
 
     if extra:
         layers = (layers or []) + extra
+
+    # Финальная защита: слой без реальных width/height (ни своих, ни
+    # унаследованных) нечем резать — уронит обрезку картинки ниже по
+    # цепочке. Проще один раз отфильтровать на выходе, чем гоняться за
+    # каждой отдельной веткой сборки списка слоёв выше.
+    if layers:
+        layers = [l for l in layers if l.get("width") and l.get("height")]
 
     return layers or None
 

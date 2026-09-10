@@ -1,5 +1,7 @@
 import { useFactoryStore } from '../../store/factoryStore'
 import { useUiStore } from '../../store/uiStore'
+import { placeTestEntitiesRow } from '../../lib/testLayout'
+import { TEST_ENTITY_TYPE_IDS } from '../../testEntities'
 
 export function TopBar() {
   const activeId = useFactoryStore((s) => s.activeId)
@@ -15,6 +17,13 @@ export function TopBar() {
         Заводы / <b>{active ? active.name : 'не выбрано'}</b>
       </div>
       <div className="spacer" />
+      <button
+        className="select-tool-btn"
+        onClick={() => placeTestEntitiesRow(TEST_ENTITY_TYPE_IDS)}
+        title="Открыть новый чертёж и разложить в ряд сущности из src/testEntities.ts — для быстрой проверки спрайтов после пересборки"
+      >
+        🧪 Тест
+      </button>
       <button
         className={`select-tool-btn${selectionToolActive ? ' active' : ''}`}
         onClick={toggleSelectionTool}
