@@ -2,12 +2,58 @@ import { create } from 'zustand'
 import { entitiesApi } from '../lib/api/entities'
 import { resolveAssetUrl } from '../lib/api/client'
 
+export interface PipeSpriteVariant {
+  url: string
+  frameWidth: number
+  frameHeight: number
+  shiftX: number
+  shiftY: number
+  scale: number
+  gameShiftX: number
+  gameShiftY: number
+}
+
+export interface FluidPipeOverlay {
+  url: string
+  productionType: 'input' | 'output' | 'input-output'
+  frameWidth: number
+  frameHeight: number
+  shiftX: number
+  shiftY: number
+  scale: number
+  gameShiftX: number
+  gameShiftY: number
+  connectionPositionX: number
+  connectionPositionY: number
+}
+
+export interface DirectionalSpriteFrame {
+  url: string
+  frameWidth: number
+  frameHeight: number
+  shiftX: number
+  shiftY: number
+  scale: number
+  gameShiftX: number
+  gameShiftY: number
+}
+
+export interface DirectionalSprites {
+  north: DirectionalSpriteFrame
+  east: DirectionalSpriteFrame
+  south: DirectionalSpriteFrame
+  west: DirectionalSpriteFrame
+}
+
 export interface CatalogEntity {
   typeId: string
   type: string
   label: string
   icon: string
   entitySprite: string | null
+  pipeSpriteVariants: Record<string, PipeSpriteVariant> | null
+  fluidPipeOverlays: FluidPipeOverlay[] | null
+  directionalSprites: DirectionalSprites | null
   category: string
   categoryId: string
   categoryOrder: string
@@ -52,6 +98,25 @@ function withResolvedIcons(entities: CatalogEntity[]): CatalogEntity[] {
     icon: resolveAssetUrl(e.icon),
     categoryIcon: resolveAssetUrl(e.categoryIcon),
     entitySprite: e.entitySprite ? resolveAssetUrl(e.entitySprite) : null,
+    pipeSpriteVariants: e.pipeSpriteVariants
+      ? Object.fromEntries(
+          Object.entries(e.pipeSpriteVariants).map(([key, variant]) => [
+            key,
+            { ...variant, url: resolveAssetUrl(variant.url) },
+          ]),
+        )
+      : null,
+    fluidPipeOverlays: e.fluidPipeOverlays
+      ? e.fluidPipeOverlays.map((overlay) => ({ ...overlay, url: resolveAssetUrl(overlay.url) }))
+      : null,
+    directionalSprites: e.directionalSprites
+      ? {
+          north: { ...e.directionalSprites.north, url: resolveAssetUrl(e.directionalSprites.north.url) },
+          east: { ...e.directionalSprites.east, url: resolveAssetUrl(e.directionalSprites.east.url) },
+          south: { ...e.directionalSprites.south, url: resolveAssetUrl(e.directionalSprites.south.url) },
+          west: { ...e.directionalSprites.west, url: resolveAssetUrl(e.directionalSprites.west.url) },
+        }
+      : null,
   }))
 }
 

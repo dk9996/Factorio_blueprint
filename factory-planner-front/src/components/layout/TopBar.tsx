@@ -1,6 +1,6 @@
 import { useFactoryStore } from '../../store/factoryStore'
 import { useUiStore } from '../../store/uiStore'
-import { placeTestEntitiesRow } from '../../lib/testLayout'
+import { placeTestEntitiesRow, placeAllCatalogEntitiesGrid, placePipeConnectionTestLayout, placeFluidOverlayTestLayout } from '../../lib/testLayout'
 import { TEST_ENTITY_TYPE_IDS } from '../../testEntities'
 
 export function TopBar() {
@@ -23,6 +23,27 @@ export function TopBar() {
         title="Открыть новый чертёж и разложить в ряд сущности из src/testEntities.ts — для быстрой проверки спрайтов после пересборки"
       >
         🧪 Тест
+      </button>
+      <button
+        className="select-tool-btn"
+        onClick={() => placeAllCatalogEntitiesGrid()}
+        title="Открыть новый чертёж и разложить сеткой ВЕСЬ каталог сущностей — для полной визуальной ревизии спрайтов"
+      >
+        🧪 Все
+      </button>
+      <button
+        className="select-tool-btn"
+        onClick={() => placePipeConnectionTestLayout()}
+        title="Открыть новый чертёж и разложить трубы во всех 16 комбинациях подключения соседей — для проверки computePipeVariantKey"
+      >
+        🧪 Трубы
+      </button>
+      <button
+        className="select-tool-btn"
+        onClick={() => placeFluidOverlayTestLayout()}
+        title="Открыть новый чертёж и разложить сборочные машины с разными рецептами — для проверки fluidPipeOverlays (патрубок виден только у жидкостных рецептов)"
+      >
+        🧪 Жидкости
       </button>
       <button
         className={`select-tool-btn${selectionToolActive ? ' active' : ''}`}

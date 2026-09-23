@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { useEntityCatalogStore, type CatalogEntity } from '../../store/entityCatalogStore'
 import { useCanvasStore } from '../../store/canvasStore'
 import { useUiStore } from '../../store/uiStore'
+import { HIDDEN_CATEGORY_IDS } from '../../hiddenCategories'
 
 export function EntityPalette() {
   const catalog = useEntityCatalogStore((s) => s.entities)
@@ -38,17 +39,6 @@ export function EntityPalette() {
 
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
-
-    // Временно скрытые категории — данные остаются в каталоге,
-  // просто не показываются в палитре. Уберём фильтр, когда понадобятся
-  // (например, при подключении симуляции и обнаружении, что чего-то не хватает).
-  const HIDDEN_CATEGORY_IDS = new Set([
-    'enemies',       // enen
-    'environment',   // envir — или как оно реально называется в твоём dump
-    'effects',       // effec
-    'se-spoilers',   // se-spoil
-    'other',         // othe / Прочее
-  ])
 
   const categories = useMemo(() => {
     const map = new Map<string, CatalogEntity[]>()

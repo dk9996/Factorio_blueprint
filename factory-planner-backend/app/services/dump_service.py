@@ -3,7 +3,12 @@ import subprocess
 from pathlib import Path
 from app.config import settings
 from app.services.locale_service import get_item_group_locale
-from app.services.entity_sprite_service import build_entity_sprite_map
+from app.services.entity_sprite_service import (
+    build_entity_sprite_map,
+    build_pipe_sprite_variant_map,
+    build_fluid_overlay_map,
+    build_directional_sprite_map,
+)
 from app.services.locale_service import get_item_group_locale, get_entity_name_locale
 from app.services.recipe_service import build_recipe_catalog
 from app.services.category_service import CategoryResolver
@@ -178,6 +183,148 @@ def get_icon_size_map() -> dict[str, int]:
     with open(ICON_SIZES_CACHE_PATH, encoding="utf-8") as f:
         return json.load(f)
 
+PIPE_SPRITE_FRAMES_PATH = ENTITY_SPRITES_DIR.parent / "entity_pipe_sprite_frames.json"
+
+
+def _load_pipe_sprite_frame_state() -> tuple[dict, set[str]]:
+    """
+    entity_pipe_sprite_frames.json (entity_name -> {variant_key: meta}) +
+    множество реально существующих на диске PNG-файлов вариантов труб
+    (имена вида "{entity_name}__pipe_{variant_key}") — та же логика, что
+    у entity_sprite_frames.json/existing_sprite_files чуть выше, только
+    для вариантов подключения труб (см. crop_pipe_variant_sprites).
+    """
+    frames: dict = {}
+    if PIPE_SPRITE_FRAMES_PATH.exists():
+        try:
+            frames = json.loads(PIPE_SPRITE_FRAMES_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            frames = {}
+    existing_files = (
+        {p.stem for p in ENTITY_SPRITES_DIR.glob("*__pipe_*.png")} if ENTITY_SPRITES_DIR.exists() else set()
+    )
+    return frames, existing_files
+
+
+def _build_pipe_variants_field(
+    name: str, pipe_sprite_frames: dict, existing_pipe_variant_files: set[str]
+) -> dict[str, dict] | None:
+    entity_frames = pipe_sprite_frames.get(name)
+    if not entity_frames:
+        return None
+    variants: dict[str, dict] = {}
+    for variant_key, meta in entity_frames.items():
+        stem = f"{name}__pipe_{variant_key}"
+        if stem not in existing_pipe_variant_files:
+            continue
+        variants[variant_key] = {
+            "url": f"/entity-assets/{stem}.png",
+            "frameWidth": meta["frameWidth"],
+            "frameHeight": meta["frameHeight"],
+            "shiftX": meta.get("shiftX", 0),
+            "shiftY": meta.get("shiftY", 0),
+            "scale": meta.get("scale", 1),
+            "gameShiftX": meta.get("gameShiftX", 0),
+            "gameShiftY": meta.get("gameShiftY", 0),
+        }
+    return variants or None
+
+
+FLUID_OVERLAY_FRAMES_PATH = ENTITY_SPRITES_DIR.parent / "entity_fluid_overlay_frames.json"
+
+
+def _load_fluid_overlay_frame_state() -> tuple[dict, set[str]]:
+    """Аналог _load_pipe_sprite_frame_state, но для патрубков жидкостных
+    fluid_boxes сборочных машин (см. crop_fluid_overlay_sprites)."""
+    frames: dict = {}
+    if FLUID_OVERLAY_FRAMES_PATH.exists():
+        try:
+            frames = json.loads(FLUID_OVERLAY_FRAMES_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            frames = {}
+    existing_files = (
+        {p.stem for p in ENTITY_SPRITES_DIR.glob("*__fluid_*.png")} if ENTITY_SPRITES_DIR.exists() else set()
+    )
+    return frames, existing_files
+
+
+def _build_fluid_overlays_field(
+    name: str, fluid_overlay_frames: dict, existing_fluid_overlay_files: set[str]
+) -> list[dict] | None:
+    entity_frames = fluid_overlay_frames.get(name)
+    if not entity_frames:
+        return None
+    overlays: list[dict] = []
+    for idx, meta in enumerate(entity_frames):
+        stem = f"{name}__fluid_{idx}"
+        if stem not in existing_fluid_overlay_files:
+            continue
+        connection_position = meta.get("connectionPosition") or [0, 0]
+        overlays.append({
+            "url": f"/entity-assets/{stem}.png",
+            "productionType": meta.get("productionType", "input-output"),
+            "frameWidth": meta["frameWidth"],
+            "frameHeight": meta["frameHeight"],
+            "shiftX": meta.get("shiftX", 0),
+            "shiftY": meta.get("shiftY", 0),
+            "scale": meta.get("scale", 1),
+            "gameShiftX": meta.get("gameShiftX", 0),
+            "gameShiftY": meta.get("gameShiftY", 0),
+            "connectionPositionX": connection_position[0],
+            "connectionPositionY": connection_position[1],
+        })
+    return overlays or None
+
+
+DIRECTIONAL_SPRITE_FRAMES_PATH = ENTITY_SPRITES_DIR.parent / "entity_directional_sprite_frames.json"
+_DIRECTION_NAMES = ("north", "east", "south", "west")
+
+
+def _load_directional_sprite_frame_state() -> tuple[dict, set[str]]:
+    """Аналог _load_pipe_sprite_frame_state/_load_fluid_overlay_frame_state,
+    но для механики поворота (R) сущностей (см. crop_directional_sprites)."""
+    frames: dict = {}
+    if DIRECTIONAL_SPRITE_FRAMES_PATH.exists():
+        try:
+            frames = json.loads(DIRECTIONAL_SPRITE_FRAMES_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            frames = {}
+    existing_files = (
+        {p.stem for p in ENTITY_SPRITES_DIR.glob("*__dir_*.png")} if ENTITY_SPRITES_DIR.exists() else set()
+    )
+    return frames, existing_files
+
+
+def _build_directional_sprites_field(
+    name: str, directional_frames: dict, existing_directional_files: set[str]
+) -> dict[str, dict] | None:
+    """Возвращает {north,east,south,west: {url, frameWidth, ...}} только если
+    ВСЕ 4 направления реально нарезаны на диск — частичный комплект хуже,
+    чем его отсутствие (см. build_directional_sprite_map): фронт либо
+    получает полный набор и переключает картинку по entity.direction, либо
+    None и продолжает рисовать обычный entitySprite как раньше."""
+    entity_frames = directional_frames.get(name)
+    if not entity_frames:
+        return None
+    result: dict[str, dict] = {}
+    for dir_key in _DIRECTION_NAMES:
+        meta = entity_frames.get(dir_key)
+        stem = f"{name}__dir_{dir_key}"
+        if not meta or stem not in existing_directional_files:
+            return None
+        result[dir_key] = {
+            "url": f"/entity-assets/{stem}.png",
+            "frameWidth": meta["frameWidth"],
+            "frameHeight": meta["frameHeight"],
+            "shiftX": meta.get("shiftX", 0),
+            "shiftY": meta.get("shiftY", 0),
+            "scale": meta.get("scale", 1),
+            "gameShiftX": meta.get("gameShiftX", 0),
+            "gameShiftY": meta.get("gameShiftY", 0),
+        }
+    return result
+
+
 def build_entity_catalog(force_redump: bool = False) -> dict:
     if force_redump or not DUMP_CACHE_PATH.exists():
         run_game_dump()
@@ -210,6 +357,10 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
             entity_sprite_frames = json.loads(frames_meta_path.read_text(encoding="utf-8"))
         except Exception:
             entity_sprite_frames = {}
+
+    pipe_sprite_frames, existing_pipe_variant_files = _load_pipe_sprite_frame_state()
+    fluid_overlay_frames, existing_fluid_overlay_files = _load_fluid_overlay_frame_state()
+    directional_sprite_frames, existing_directional_files = _load_directional_sprite_frame_state()
 
     for section_name, section in raw.items():
         if not isinstance(section, dict):
@@ -278,6 +429,15 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "bulkInserterConfig": _looks_like_bulk_inserter(name, proto),
                 "logisticRadius": proto.get("logistic_radius"),
                 "constructionRadius": proto.get("construction_radius"),
+                "pipeSpriteVariants": _build_pipe_variants_field(
+                    name, pipe_sprite_frames, existing_pipe_variant_files
+                ),
+                "fluidPipeOverlays": _build_fluid_overlays_field(
+                    name, fluid_overlay_frames, existing_fluid_overlay_files
+                ),
+                "directionalSprites": _build_directional_sprites_field(
+                    name, directional_sprite_frames, existing_directional_files
+                ),
             })
             entity_type_counts[section_name] = entity_type_counts.get(section_name, 0) + 1
 
@@ -300,6 +460,15 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
 
     entity_names = {e["typeId"] for e in catalog}
     sprite_map = build_entity_sprite_map(raw, entity_names)
+    pipe_variant_map = build_pipe_sprite_variant_map(raw, entity_names)
+    fluid_overlay_map = build_fluid_overlay_map(raw, entity_names)
+    # Трубы и жидкостные патрубки сборочных машин уже сами по себе
+    # направленные (свой отдельный механизм выбора картинки по соседям/
+    # рецепту) — не даём им попасть ещё и в directional_map поворота
+    # сущностей, чтобы не плодить два конфликтующих источника направления
+    # на одну и ту же сущность.
+    directional_skip_names = set(pipe_variant_map) | set(fluid_overlay_map)
+    directional_map = build_directional_sprite_map(raw, entity_names, directional_skip_names)
     recipe_result = build_recipe_catalog(raw)
 
     return {
@@ -309,12 +478,71 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
         "categories_found": categories_found,
         "sections_breakdown": entity_type_counts,
         "sprites_extracted": len(sprite_map),
+        "pipe_variant_entities": len(pipe_variant_map),
+        "fluid_overlay_entities": len(fluid_overlay_map),
+        "directional_sprite_entities": len(directional_map),
         "recipes_extracted": recipe_result["total"],
     }
+
+
+ENTITY_SPRITE_FRAMES_PATH = ENTITY_SPRITES_DIR.parent / "entity_sprite_frames.json"
 
 
 def get_cached_catalog() -> list[dict]:
     if not CATALOG_CACHE_PATH.exists():
         return []
     with open(CATALOG_CACHE_PATH, encoding="utf-8") as f:
-        return json.load(f)
+        catalog = json.load(f)
+
+    # Спрайты (PNG + entity_sprite_frames.json) пересобираются ОТДЕЛЬНЫМ
+    # эндпоинтом (/api/mods/entity-sprites/rebuild) — обычно ПОСЛЕ
+    # /api/entities/rebuild, который и запекает entity_catalog.json. Из-за
+    # этого поля spriteFrameWidth/Height/Scale/... в закэшированном файле
+    # почти всегда отстают на один шаг пайплайна от реальных PNG на диске
+    # (типичный порядок вызовов: entities/rebuild → mods/entity-sprites/
+    # rebuild — в момент первого вызова новых размеров кадров ещё нет).
+    # Например se-space-pipe так показывался "расплющенным" — в кэше лежал
+    # старый 160×80/scale=1 от предыдущей generación, хотя реальный PNG на
+    # диске уже честные 128×128/scale=0.5. Патчим эти поля здесь заново при
+    # КАЖДОМ чтении каталога, а не доверяем однажды запечённым — тогда
+    # порядок вызовов эндпоинтов пересборки перестаёт иметь значение.
+    entity_sprite_frames: dict = {}
+    if ENTITY_SPRITE_FRAMES_PATH.exists():
+        try:
+            entity_sprite_frames = json.loads(ENTITY_SPRITE_FRAMES_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            entity_sprite_frames = {}
+
+    existing_sprite_files = (
+        {p.stem for p in ENTITY_SPRITES_DIR.glob("*.png")} if ENTITY_SPRITES_DIR.exists() else set()
+    )
+
+    pipe_sprite_frames, existing_pipe_variant_files = _load_pipe_sprite_frame_state()
+    fluid_overlay_frames, existing_fluid_overlay_files = _load_fluid_overlay_frame_state()
+    directional_sprite_frames, existing_directional_files = _load_directional_sprite_frame_state()
+
+    for entry in catalog:
+        name = entry.get("typeId")
+        has_sprite = name in existing_sprite_files
+        frame_info = entity_sprite_frames.get(name)
+        entry["entitySprite"] = f"/entity-assets/{name}.png" if has_sprite else None
+        entry["spriteFrameWidth"] = frame_info["frameWidth"] if frame_info else None
+        entry["spriteFrameHeight"] = frame_info["frameHeight"] if frame_info else None
+        entry["spriteFrameCount"] = frame_info["frameCount"] if frame_info else None
+        entry["spriteLineLength"] = frame_info["lineLength"] if frame_info else None
+        entry["spriteShiftX"] = frame_info.get("shiftX", 0) if frame_info else 0
+        entry["spriteShiftY"] = frame_info.get("shiftY", 0) if frame_info else 0
+        entry["spriteScale"] = frame_info.get("scale", 1) if frame_info else 1
+        entry["spriteGameShiftX"] = frame_info.get("gameShiftX", 0) if frame_info else 0
+        entry["spriteGameShiftY"] = frame_info.get("gameShiftY", 0) if frame_info else 0
+        entry["pipeSpriteVariants"] = _build_pipe_variants_field(
+            name, pipe_sprite_frames, existing_pipe_variant_files
+        )
+        entry["fluidPipeOverlays"] = _build_fluid_overlays_field(
+            name, fluid_overlay_frames, existing_fluid_overlay_files
+        )
+        entry["directionalSprites"] = _build_directional_sprites_field(
+            name, directional_sprite_frames, existing_directional_files
+        )
+
+    return catalog

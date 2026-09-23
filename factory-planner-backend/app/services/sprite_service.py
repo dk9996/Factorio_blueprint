@@ -653,3 +653,299 @@ def crop_entity_sprites(force: bool = False) -> dict:
         "errors": errors[:30],  # не раздуваем ответ, если ошибок много
         "total_errors": len(errors),
     }
+
+
+from app.services.entity_sprite_service import get_pipe_sprite_variant_map, get_fluid_overlay_map, get_directional_sprite_map
+
+PIPE_SPRITE_FRAMES_PATH = ENTITY_SPRITES_OUTPUT_DIR.parent / "entity_pipe_sprite_frames.json"
+FLUID_OVERLAY_FRAMES_PATH = ENTITY_SPRITES_OUTPUT_DIR.parent / "entity_fluid_overlay_frames.json"
+DIRECTIONAL_SPRITE_FRAMES_PATH = ENTITY_SPRITES_OUTPUT_DIR.parent / "entity_directional_sprite_frames.json"
+
+
+def _render_single_leaf_png(leaf: dict, out_path: Path) -> dict | str:
+    """
+    Нарезает и сохраняет ОДИН статичный лист (без composite вторичных
+    слоёв — вариантам трубы это не нужно, pictures.* там всегда плоский
+    файл) — упрощённый вариант основного пути crop_entity_sprites, вынесен
+    отдельно, чтобы не трогать уже стабильную crop_entity_sprites (см.
+    комментарий в entity_sprite_service.py про PIPE_VARIANT_KEY_BY_SIDES).
+    Возвращает метаданные кадра либо строку с причиной неудачи.
+    """
+    width = leaf.get("width")
+    height = leaf.get("height")
+    if not width or not height:
+        return "нет width/height"
+    width = int(round(width))
+    height = int(round(height))
+    off_x = int(leaf.get("x", 0) or 0)
+    off_y = int(leaf.get("y", 0) or 0)
+
+    file_bytes = _find_source_file(leaf["filename"])
+    if file_bytes is None:
+        return f"файл {leaf['filename']} не найден на диске"
+
+    with Image.open(BytesIO(file_bytes)) as img:
+        img.load()
+        if img.width < off_x + width or img.height < off_y + height:
+            return "размер файла меньше ожидаемого"
+        cropped = img.crop((off_x, off_y, off_x + width, off_y + height))
+        trimmed, saved_width, saved_height, shift_x, shift_y = _trim_common_margin(
+            cropped, width, height, 1, 1, 1
+        )
+
+    trimmed = _apply_tint(trimmed, leaf.get("tint")) if leaf.get("tint") else trimmed
+    trimmed.save(out_path)
+
+    scale_val = leaf.get("scale", 1) or 1
+    game_shift = leaf.get("shift") or [0, 0]
+    return {
+        "frameWidth": saved_width,
+        "frameHeight": saved_height,
+        "shiftX": shift_x,
+        "shiftY": shift_y,
+        "scale": scale_val,
+        "gameShiftX": game_shift[0],
+        "gameShiftY": game_shift[1],
+    }
+
+
+def _render_leaf_layers_png(layers: list[dict], out_path: Path) -> dict | str:
+    """
+    Как _render_single_leaf_png, но принимает СПИСОК слоёв, а не один лист —
+    если слоёв больше одного, доклеивает доп. слои через _composite_layers
+    (та же логика, что и у обычного entitySprite в crop_entity_sprites).
+    Нужно для направленной графики (crop_directional_sprites): у части
+    сущностей (например у буровых — основа + лоток выхода руды отдельным
+    полем) визуал состоит из НЕСКОЛЬКИХ слоёв, и без композита направленный
+    вариант потерял бы декоративные детали, которые обычный entitySprite
+    показывает. Труб/патрубков это не касается — там pictures.* всегда
+    ровно один плоский файл, для них по-прежнему используется
+    _render_single_leaf_png напрямую. Всегда один статичный кадр без
+    анимации — направленные варианты анимацию не поддерживают.
+    """
+    if len(layers) == 1:
+        return _render_single_leaf_png(layers[0], out_path)
+
+    base = layers[0]
+    width = base.get("width")
+    height = base.get("height")
+    if not width or not height:
+        return "нет width/height у базового слоя"
+    width = int(round(width))
+    height = int(round(height))
+    off_x = int(base.get("x", 0) or 0)
+    off_y = int(base.get("y", 0) or 0)
+
+    file_bytes = _find_source_file(base["filename"])
+    if file_bytes is None:
+        return f"файл {base['filename']} не найден на диске"
+
+    with Image.open(BytesIO(file_bytes)) as img:
+        img.load()
+        if img.width < off_x + width or img.height < off_y + height:
+            return "размер файла меньше ожидаемого"
+        cropped = img.crop((off_x, off_y, off_x + width, off_y + height))
+        trimmed, saved_width, saved_height, shift_x, shift_y = _trim_common_margin(
+            cropped, width, height, 1, 1, 1
+        )
+
+    scale_val = base.get("scale", 1) or 1
+    game_shift = base.get("shift") or [0, 0]
+    primary_effective_shift = (
+        game_shift[0] + shift_x * scale_val / 32,
+        game_shift[1] + shift_y * scale_val / 32,
+    )
+    composite_result = _composite_layers(
+        trimmed, saved_width, saved_height, 1, 1, 1,
+        scale_val, primary_effective_shift, layers[1:],
+    )
+    if isinstance(composite_result, str):
+        # Доп. слои не склеились (например файл не нашёлся) — лучше отдать
+        # однослойный результат (как _render_single_leaf_png), чем ничего.
+        base_trimmed = _apply_tint(trimmed, base.get("tint")) if base.get("tint") else trimmed
+        base_trimmed.save(out_path)
+        return {
+            "frameWidth": saved_width,
+            "frameHeight": saved_height,
+            "shiftX": shift_x,
+            "shiftY": shift_y,
+            "scale": scale_val,
+            "gameShiftX": game_shift[0],
+            "gameShiftY": game_shift[1],
+        }
+
+    final_image, final_w, final_h, final_gsx, final_gsy = composite_result
+    final_image.save(out_path)
+    return {
+        "frameWidth": final_w,
+        "frameHeight": final_h,
+        "shiftX": 0.0,
+        "shiftY": 0.0,
+        "scale": 1,
+        "gameShiftX": final_gsx,
+        "gameShiftY": final_gsy,
+    }
+
+
+def crop_pipe_variant_sprites(force: bool = False) -> dict:
+    """
+    Нарезает для каждой трубоподобной сущности (см.
+    entity_sprite_service.get_pipe_sprite_variant_map) ВСЕ 16 вариантов
+    картинки подключения в отдельные PNG
+    ({entity_name}__pipe_{variant_key}.png), а не один как
+    crop_entity_sprites. Метаданные — в отдельном
+    entity_pipe_sprite_frames.json (не смешиваем с обычным
+    entity_sprite_frames.json, чтобы не задеть уже стабильный формат).
+    """
+    ENTITY_SPRITES_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    variant_map = get_pipe_sprite_variant_map()
+
+    processed = 0
+    skipped_exists = 0
+    errors: list[str] = []
+    frame_meta: dict[str, dict] = {}
+
+    if PIPE_SPRITE_FRAMES_PATH.exists() and not force:
+        try:
+            frame_meta = json.loads(PIPE_SPRITE_FRAMES_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            frame_meta = {}
+
+    for entity_name, variants in variant_map.items():
+        entity_meta = frame_meta.get(entity_name, {}) if not force else {}
+        for variant_key, leaf in variants.items():
+            out_path = ENTITY_SPRITES_OUTPUT_DIR / f"{entity_name}__pipe_{variant_key}.png"
+            if out_path.exists() and not force and variant_key in entity_meta:
+                skipped_exists += 1
+                continue
+            result = _render_single_leaf_png(leaf, out_path)
+            if isinstance(result, str):
+                errors.append(f"{entity_name}/{variant_key}: {result}")
+                continue
+            entity_meta[variant_key] = result
+            processed += 1
+        frame_meta[entity_name] = entity_meta
+
+    PIPE_SPRITE_FRAMES_PATH.write_text(
+        json.dumps(frame_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    return {
+        "processed": processed,
+        "skipped_exists": skipped_exists,
+        "errors": errors[:30],
+        "total_errors": len(errors),
+    }
+
+
+def crop_fluid_overlay_sprites(force: bool = False) -> dict:
+    """
+    Нарезает патрубки fluid_boxes сборочных машин (см.
+    entity_sprite_service.get_fluid_overlay_map) в отдельные PNG
+    ({entity_name}__fluid_{index}.png) — аналог crop_pipe_variant_sprites,
+    но список overlay'ев произвольной длины (обычно 1-2 на сущность:
+    вход/выход), а не 16 фиксированных вариантов.
+    """
+    ENTITY_SPRITES_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    overlay_map = get_fluid_overlay_map()
+
+    processed = 0
+    skipped_exists = 0
+    errors: list[str] = []
+    frame_meta: dict[str, list[dict]] = {}
+
+    if FLUID_OVERLAY_FRAMES_PATH.exists() and not force:
+        try:
+            frame_meta = json.loads(FLUID_OVERLAY_FRAMES_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            frame_meta = {}
+
+    for entity_name, overlays in overlay_map.items():
+        entity_meta = frame_meta.get(entity_name, []) if not force else []
+        if not force and len(entity_meta) == len(overlays):
+            skipped_exists += len(overlays)
+            frame_meta[entity_name] = entity_meta
+            continue
+        entity_meta = []
+        for idx, overlay in enumerate(overlays):
+            out_path = ENTITY_SPRITES_OUTPUT_DIR / f"{entity_name}__fluid_{idx}.png"
+            result = _render_single_leaf_png(overlay["leaf"], out_path)
+            if isinstance(result, str):
+                errors.append(f"{entity_name}/{idx}: {result}")
+                continue
+            entity_meta.append({
+                **result,
+                "productionType": overlay["productionType"],
+                "connectionPosition": overlay.get("connectionPosition", [0, 0]),
+            })
+            processed += 1
+        frame_meta[entity_name] = entity_meta
+
+    FLUID_OVERLAY_FRAMES_PATH.write_text(
+        json.dumps(frame_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    return {
+        "processed": processed,
+        "skipped_exists": skipped_exists,
+        "errors": errors[:30],
+        "total_errors": len(errors),
+    }
+
+
+def crop_directional_sprites(force: bool = False) -> dict:
+    """
+    Нарезает для механики поворота (R) сущностей 4 варианта картинки
+    (north/east/south/west) — см. entity_sprite_service.get_directional_sprite_map
+    — в отдельные PNG ({entity_name}__dir_{direction}.png), аналог
+    crop_pipe_variant_sprites, но фиксированный набор из 4 ключей вместо 16
+    вариантов трубы. Каждое направление рендерится через
+    _render_leaf_layers_png — она композитит ВСЕ слои направления (не
+    только первый), как и обычный entitySprite в crop_entity_sprites:
+    иначе у многослойных сущностей (например у буровых — основа отдельно
+    от лотка выхода руды) направленный вариант терял бы декоративные
+    детали, которые обычный entitySprite показывает — визуальная разница
+    появлялась бы даже в направлении "north" по умолчанию, без единого
+    нажатия R.
+    """
+    ENTITY_SPRITES_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    directional_map = get_directional_sprite_map()
+
+    processed = 0
+    skipped_exists = 0
+    errors: list[str] = []
+    frame_meta: dict[str, dict] = {}
+
+    if DIRECTIONAL_SPRITE_FRAMES_PATH.exists() and not force:
+        try:
+            frame_meta = json.loads(DIRECTIONAL_SPRITE_FRAMES_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            frame_meta = {}
+
+    for entity_name, per_direction in directional_map.items():
+        entity_meta = frame_meta.get(entity_name, {}) if not force else {}
+        for dir_key, layers in per_direction.items():
+            out_path = ENTITY_SPRITES_OUTPUT_DIR / f"{entity_name}__dir_{dir_key}.png"
+            if out_path.exists() and not force and dir_key in entity_meta:
+                skipped_exists += 1
+                continue
+            if not layers:
+                continue
+            result = _render_leaf_layers_png(layers, out_path)
+            if isinstance(result, str):
+                errors.append(f"{entity_name}/{dir_key}: {result}")
+                continue
+            entity_meta[dir_key] = result
+            processed += 1
+        frame_meta[entity_name] = entity_meta
+
+    DIRECTIONAL_SPRITE_FRAMES_PATH.write_text(
+        json.dumps(frame_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    return {
+        "processed": processed,
+        "skipped_exists": skipped_exists,
+        "errors": errors[:30],
+        "total_errors": len(errors),
+    }

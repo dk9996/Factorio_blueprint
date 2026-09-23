@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+export type EntityDirection = 0 | 90 | 180 | 270
+
 export interface PlacedEntity {
   id: number
   typeId: string
@@ -10,6 +12,9 @@ export interface PlacedEntity {
   y: number
   width: number
   height: number
+  // Поворот (R в игре) — 0/90/180/270, по часовой стрелке. undefined
+  // трактуется как 0 (сущности, размещённые до появления этого поля).
+  direction?: EntityDirection
   bottleneck?: boolean
   power?: number
   pollution?: number
@@ -29,6 +34,7 @@ export interface PlacingGroupItem {
   height: number
   offsetX: number
   offsetY: number
+  direction?: EntityDirection
   craftingCategories?: string[]
   moduleSlots?: number
   recipe?: string | null
@@ -78,6 +84,7 @@ interface CanvasStore {
   commitMove: (id: number, origX: number, origY: number) => void
   removeEntity: (id: number) => void
   removeEntities: (ids: Set<number>) => void
+  rotateEntities: (ids: Set<number>, deltaSteps: 1 | -1) => void
   canPlaceAt: (rect: Rect, excludeId?: number) => boolean
 
   undo: () => void
@@ -201,6 +208,36 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       if (ids.size === 0) return
       pushHistory()
       set((state) => ({ entities: state.entities.filter((e) => !ids.has(e.id)) }))
+    },
+
+    rotateEntities: (ids, deltaSteps) => {
+      if (ids.size === 0) return
+      const { entities, canPlaceAt } = get()
+
+      // Поворот на 90°/270° всегда меняет местами width/height вокруг ТЕКУЩЕГО
+      // центра сущности (0/180 — размеры не меняются, свап нужен ровно на
+      // каждом шаге ±90°, независимо от абсолютного direction — два свапа
+      // подряд возвращают исходные размеры, что и требуется для 0<->180).
+      // Хитбокс/коллизия не должны накладываться на соседей после поворота —
+      // если новый прямоугольник блокирован, эту сущность просто пропускаем
+      // (остальные выделенные всё равно поворачиваются), как и moveEntityLive
+      // молча отклоняет недопустимое перемещение.
+      const rotated = entities.map((e) => {
+        if (!ids.has(e.id)) return e
+        const newWidth = e.height
+        const newHeight = e.width
+        const newX = e.x + (e.width - newWidth) / 2
+        const newY = e.y + (e.height - newHeight) / 2
+        const newDirection = (((e.direction ?? 0) + deltaSteps * 90) % 360 + 360) % 360 as PlacedEntity['direction']
+        const rect: Rect = { x: newX, y: newY, width: newWidth, height: newHeight }
+        if (!canPlaceAt(rect, e.id)) return e
+        return { ...e, x: newX, y: newY, width: newWidth, height: newHeight, direction: newDirection }
+      })
+
+      if (rotated.every((e, i) => e === entities[i])) return // все повороты заблокированы — нечего коммитить
+
+      pushHistory()
+      set({ entities: rotated })
     },
 
     undo: () => {

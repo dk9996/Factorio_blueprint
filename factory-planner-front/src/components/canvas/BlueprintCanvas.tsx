@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useUiStore } from '../../store/uiStore'
 import { useCanvasStore } from '../../store/canvasStore'
+import type { PlacingGroupItem } from '../../store/canvasStore'
 import { EntityNode } from './EntityNode'
 import { StatPopover } from './StatPopover'
 import { BalancePanel } from '../balance-panel/BalancePanel'
@@ -22,6 +23,23 @@ import { useEntityCatalogStore } from '../../store/entityCatalogStore'
 import { useAnimationStore } from '../../store/animationStore'
 
 const GRID = 32
+
+// Поворот (R) одного элемента призрака перед постановкой — свап width/height
+// (см. rotateEntities в canvasStore — та же логика для уже размещённых
+// сущностей) + цикл direction по кругу. offsetX/offsetY группы (несколько
+// items — вставка блюпринта Ctrl+V) сознательно НЕ поворачиваются вокруг
+// общего центра группы — для одиночной сущности из палитры/хотбара/Q
+// (offset всегда 0,0) разницы нет, а полный поворот многосоставной группы —
+// отдельная, более объёмная геометрическая задача.
+function rotatePlacingItem(item: PlacingGroupItem, deltaSteps: 1 | -1): PlacingGroupItem {
+  return {
+    ...item,
+    width: item.height,
+    height: item.width,
+    direction: ((((item.direction ?? 0) + deltaSteps * 90) % 360) + 360) % 360 as PlacingGroupItem['direction'],
+  }
+}
+
 const TYPE_PANEL_MAP: Record<string, 'inserter' | 'loader' | 'mining-drill' | 'lab' | 'rocket-silo' | 'roboport'> = {
   'inserter': 'inserter',
   'loader': 'loader',
@@ -57,6 +75,7 @@ export function BlueprintCanvas() {
   const addEntities = useCanvasStore((s) => s.addEntities)
   const canPlaceAt = useCanvasStore((s) => s.canPlaceAt)
   const removeEntities = useCanvasStore((s) => s.removeEntities)
+  const rotateEntities = useCanvasStore((s) => s.rotateEntities)
   const setEntityRecipe = useCanvasStore((s) => s.setEntityRecipe)
   const undo = useCanvasStore((s) => s.undo)
   const redo = useCanvasStore((s) => s.redo)
@@ -74,6 +93,46 @@ export function BlueprintCanvas() {
     : undefined
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
+
+  // Размер видимой области канваса — нужен, чтобы понять, какие сущности
+  // реально попадают в кадр. Держим в стейте (не читаем напрямую из DOM
+  // в рендере), чтобы React пересчитал видимые сущности при ресайзе окна.
+  const [viewportSize, setViewportSize] = useState({ width: window.innerWidth, height: window.innerHeight })
+  useEffect(() => {
+    if (!wrapRef.current) return
+    const observer = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect
+      setViewportSize({ width, height })
+    })
+    observer.observe(wrapRef.current)
+    return () => observer.disconnect()
+  }, [])
+
+  // Рендерим DOM/картинку только для сущностей, реально попадающих в кадр
+  // (+ запас в PAN_MARGIN мировых пикселей, чтобы соседние при панорамировании
+  // не появлялись "внезапно" через кадр). При тысячах сущностей на чертеже
+  // (см. кнопку "Все" — кладёт весь каталог сеткой) монтирование ВСЕХ сразу
+  // заставляло браузер декодировать сотни спрайтов одновременно, включая
+  // огромные многокадровые полосы анимации (некоторые больше 4000×5000px —
+  // это под 100МБ на файл в раскодированном виде) — память вылетала почти
+  // мгновенно. Сама сущность остаётся в entities (стор) всегда — считается
+  // в балансе завода и т.п., меняется только то, что физически монтируется
+  // в DOM. Анимация при этом не страдает: то, что реально видно на экране,
+  // рендерится и анимируется как обычно, урезается только то, что за кадром.
+  const PAN_MARGIN = 600
+  const visibleEntities = useMemo(() => {
+    const worldLeft = -offsetX / scale - PAN_MARGIN
+    const worldTop = -offsetY / scale - PAN_MARGIN
+    const worldRight = worldLeft + viewportSize.width / scale + PAN_MARGIN * 2
+    const worldBottom = worldTop + viewportSize.height / scale + PAN_MARGIN * 2
+    return entities.filter(
+      (e) =>
+        e.x + e.width > worldLeft &&
+        e.x < worldRight &&
+        e.y + e.height > worldTop &&
+        e.y < worldBottom,
+    )
+  }, [entities, offsetX, offsetY, scale, viewportSize])
 
   // Общий тик анимации спрайтов — один интервал на всё приложение,
   // читается всеми EntityNode через useAnimationStore.
@@ -236,6 +295,7 @@ export function BlueprintCanvas() {
       y: baseY + item.offsetY,
       width: item.width,
       height: item.height,
+      direction: item.direction,
       craftingCategories: item.craftingCategories,
       moduleSlots: item.moduleSlots,
       recipe: item.recipe,
@@ -311,6 +371,17 @@ export function BlueprintCanvas() {
         return
       }
 
+      if (e.code === 'KeyR' && !ctrl) {
+        e.preventDefault()
+        const delta: 1 | -1 = e.shiftKey ? -1 : 1
+        if (placing) {
+          setPlacing({ items: placing.items.map((item) => rotatePlacingItem(item, delta)) })
+        } else if (selectedEntityIds.size > 0) {
+          rotateEntities(selectedEntityIds, delta)
+        }
+        return
+      }
+
       if (e.code === 'KeyQ' && !e.repeat) {
         const target = document.elementFromPoint(lastMouse.current.x, lastMouse.current.y)
         const entityEl = target?.closest('[data-entity-id]') as HTMLElement | null
@@ -329,6 +400,7 @@ export function BlueprintCanvas() {
                 height: entity.height,
                 offsetX: 0,
                 offsetY: 0,
+                direction: entity.direction,
                 craftingCategories: entity.craftingCategories,
                 moduleSlots: entity.moduleSlots,
                 recipe: entity.recipe,
@@ -365,6 +437,7 @@ export function BlueprintCanvas() {
     placing,
     setPlacing,
     removeEntities,
+    rotateEntities,
     clearSelection,
     copyToClipboard,
     addEntities,
@@ -431,7 +504,7 @@ export function BlueprintCanvas() {
           transformOrigin: '0 0',
         }}
       >
-        {entities.map((entity) => (
+        {visibleEntities.map((entity) => (
           <EntityNode
             key={entity.id}
             entity={entity}

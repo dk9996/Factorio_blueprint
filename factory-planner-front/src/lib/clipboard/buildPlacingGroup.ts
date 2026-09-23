@@ -15,6 +15,7 @@ export function buildPlacingGroup(
     height: i.height,
     offsetX: i.x - minX,
     offsetY: i.y - minY,
+    direction: i.direction,
     craftingCategories: i.craftingCategories,
     moduleSlots: i.moduleSlots,
     recipe: i.recipe,        // ← добавить
