@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { useCanvasStore, type PlacedEntity } from './canvasStore'
 import { useViewportStore } from './viewportStore'
+import type { BlueprintTabMeta } from '../lib/blueprint/convert.ts'
 
 interface Snapshot {
   entities: PlacedEntity[]
@@ -19,6 +20,11 @@ interface Tab {
   offsetY: number
   scale: number
   savedEntitiesJson: string
+  // Метаданные исходного чертежа Factorio (label/description/icons/tiles/
+  // wires/version) — только у вкладок, открытых импортом строки чертежа
+  // (см. ImportExportPanel). Нужны, чтобы повторный экспорт той же
+  // вкладки не терял эти данные. У обычных вкладок — undefined.
+  blueprintMeta?: BlueprintTabMeta
 }
 
 interface TabsStore {
@@ -26,6 +32,11 @@ interface TabsStore {
   activeTabId: string
   openBlankTab: () => void
   openFactoryTab: (factoryId: string, title: string, entities: PlacedEntity[]) => void
+  // Новая вкладка из импортированного чертежа (см. ImportExportPanel) —
+  // в отличие от openFactoryTab НЕ ищет существующую вкладку с тем же
+  // чертежом (каждый импорт — новая вкладка) и не привязана к сохранённому
+  // заводу (factoryId всегда null).
+  openBlueprintTab: (title: string, entities: PlacedEntity[], nextId: number, meta: BlueprintTabMeta) => string
   closeTab: (id: string) => void
   switchTab: (id: string) => void
   renameActiveTab: (title: string) => void
@@ -127,6 +138,29 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     }
     set({ tabs: [...saved, newTab], activeTabId: newTab.id })
     restoreStoresFromTab(newTab)
+  },
+
+  openBlueprintTab: (title, entities, nextId, meta) => {
+    const { tabs, activeTabId } = get()
+    const saved = tabs.map((t) => (t.id === activeTabId ? { ...t, ...snapshotCurrentStores() } : t))
+
+    const newTab: Tab = {
+      id: `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title,
+      factoryId: null,
+      entities,
+      nextId,
+      past: [],
+      future: [],
+      offsetX: 0,
+      offsetY: 0,
+      scale: 1,
+      savedEntitiesJson: JSON.stringify(entities),
+      blueprintMeta: meta,
+    }
+    set({ tabs: [...saved, newTab], activeTabId: newTab.id })
+    restoreStoresFromTab(newTab)
+    return newTab.id
   },
 
   switchTab: (id) => {

@@ -1,9 +1,10 @@
 import pako from 'pako'
-import type { BlueprintWrapper } from '../../types/blueprint'
 
-const FORMAT_VERSION = '0' // текущая версия формата Factorio blueprint string
+const FORMAT_VERSION_CHAR = '0'
 
-export function encodeBlueprint(data: BlueprintWrapper): string {
+// Сырой JSON ({blueprint:...} или {blueprint_book:...}) -> Factorio
+// blueprint string. Пара к decodeBlueprintString.
+export function encodeBlueprintString(data: unknown): string {
   const jsonString = JSON.stringify(data)
   const compressed = pako.deflate(jsonString, { level: 9 })
 
@@ -13,5 +14,5 @@ export function encodeBlueprint(data: BlueprintWrapper): string {
   }
   const base64 = btoa(binary)
 
-  return FORMAT_VERSION + base64
+  return FORMAT_VERSION_CHAR + base64
 }

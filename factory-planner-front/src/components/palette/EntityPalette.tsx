@@ -106,6 +106,9 @@ export function EntityPalette() {
                 moduleSlots: entity.moduleSlots,
               },
             ],
+            // Свежий выбор из палитры — включаем двухшаговую постановку
+            // подземных конвейеров/труб (см. src/lib/underground.ts).
+            undergroundAutoCycle: entity.ioHints?.undergroundMaxDistance != null,
           },
     )
   }

@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { useFactoryStore } from '../../store/factoryStore'
 import { useUiStore } from '../../store/uiStore'
 import { placeTestEntitiesRow, placeAllCatalogEntitiesGrid, placePipeConnectionTestLayout, placeFluidOverlayTestLayout } from '../../lib/testLayout'
 import { TEST_ENTITY_TYPE_IDS } from '../../testEntities'
+import { SettingsPanel } from './SettingsPanel'
 
 export function TopBar() {
   const activeId = useFactoryStore((s) => s.activeId)
@@ -9,6 +11,7 @@ export function TopBar() {
   const active = factories.find((f) => f.id === activeId)
   const selectionToolActive = useUiStore((s) => s.selectionToolActive)
   const toggleSelectionTool = useUiStore((s) => s.toggleSelectionTool)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   return (
     <div className="topbar">
@@ -52,9 +55,17 @@ export function TopBar() {
       >
         ⬚ Выделение
       </button>
+      <button
+        className={`select-tool-btn${settingsOpen ? ' active' : ''}`}
+        onClick={() => setSettingsOpen((v) => !v)}
+        title="Настройки"
+      >
+        ⚙ Настройки
+      </button>
       <div className="sim-status">
         <span className="dot" /> симуляция актуальна · 60 тик/с
       </div>
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
     </div>
   )
 }

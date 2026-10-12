@@ -18,7 +18,9 @@ export function buildPlacingGroup(
     direction: i.direction,
     craftingCategories: i.craftingCategories,
     moduleSlots: i.moduleSlots,
-    recipe: i.recipe,        // ← добавить
+    recipe: i.recipe,
+    modules: i.modules,
+    extra: i.extra,
   }))
 }
 

@@ -45,6 +45,64 @@ export interface DirectionalSprites {
   west: DirectionalSpriteFrame
 }
 
+// Подсказки входов/выходов (стрелки) — см. src/lib/ioHints.ts. Все позиции/
+// направления здесь — "сырые", в северной ориентации сущности (как
+// объявлено в прототипе игры), поворот на entity.direction делает
+// computeIoHints на фронте.
+export interface IoHintsInserter {
+  pickup: [number, number]
+  drop: [number, number]
+}
+
+export interface IoHintsFluidFilter {
+  name: string
+  label: string
+  icon: string | null
+  color: [number, number, number] | null
+}
+
+export interface IoHintsFluidPort {
+  index: number
+  productionType: 'input' | 'output' | 'input-output'
+  // Ровно одно из двух не-null (см. бэкенд io_hints_service.py —
+  // pumpjack — единственный встреченный случай с positionsByDirection).
+  position: [number, number] | null
+  positionsByDirection: [
+    [number, number],
+    [number, number],
+    [number, number],
+    [number, number],
+  ] | null
+  direction: number // 0/4/8/12 = N/E/S/W, в северной ориентации сущности
+  filter: IoHintsFluidFilter | null
+  recipeMatchIndex: number | null
+}
+
+export type IoHintsKind =
+  | 'inserter'
+  | 'belt'
+  | 'underground-belt'
+  | 'splitter'
+  | 'loader'
+  | 'crafting'
+  | 'mining-drill'
+  | 'fixed-fluid'
+
+export interface IoHints {
+  kind: IoHintsKind
+  inserter: IoHintsInserter | null
+  fluidPorts: IoHintsFluidPort[] | null
+  dropVector: [number, number] | null
+  // Механика подземных конвейеров/труб (см. src/lib/underground.ts) —
+  // максимальная дальность (в тайлах, из прототипа — max_distance у
+  // underground-belt, max_underground_distance у подземной трубы).
+  // undergroundDirection — ТОЛЬКО у труб (pipe-to-ground): "северное"
+  // (до поворота сущности) направление подземной стороны (0/4/8/12).
+  // У underground-belt null — его ось = собственный entity.direction.
+  undergroundMaxDistance: number | null
+  undergroundDirection: number | null
+}
+
 export interface CatalogEntity {
   typeId: string
   type: string
@@ -54,6 +112,7 @@ export interface CatalogEntity {
   pipeSpriteVariants: Record<string, PipeSpriteVariant> | null
   fluidPipeOverlays: FluidPipeOverlay[] | null
   directionalSprites: DirectionalSprites | null
+  ioHints: IoHints | null
   category: string
   categoryId: string
   categoryOrder: string
@@ -68,6 +127,9 @@ export interface CatalogEntity {
   craftingSpeed: number | null
   miningSpeed: number | null
   researchingSpeed: number | null
+  // Скорость конвейера/погрузчика/сплиттера (тайлов/тик), null у
+  // остальных типов — см. src/lib/networks.ts, GroupStatsPanel.tsx.
+  speed: number | null
   rocketPartsRequired: number | null
   filterCount: number
   bulkInserterConfig: boolean
@@ -115,6 +177,19 @@ function withResolvedIcons(entities: CatalogEntity[]): CatalogEntity[] {
           east: { ...e.directionalSprites.east, url: resolveAssetUrl(e.directionalSprites.east.url) },
           south: { ...e.directionalSprites.south, url: resolveAssetUrl(e.directionalSprites.south.url) },
           west: { ...e.directionalSprites.west, url: resolveAssetUrl(e.directionalSprites.west.url) },
+        }
+      : null,
+    ioHints: e.ioHints
+      ? {
+          ...e.ioHints,
+          fluidPorts: e.ioHints.fluidPorts
+            ? e.ioHints.fluidPorts.map((port) => ({
+                ...port,
+                filter: port.filter && port.filter.icon
+                  ? { ...port.filter, icon: resolveAssetUrl(port.filter.icon) }
+                  : port.filter,
+              }))
+            : null,
         }
       : null,
   }))

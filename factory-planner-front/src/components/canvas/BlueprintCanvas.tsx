@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useUiStore } from '../../store/uiStore'
 import { useCanvasStore } from '../../store/canvasStore'
-import type { PlacingGroupItem } from '../../store/canvasStore'
+import type { PlacingGroupItem, PlacingState } from '../../store/canvasStore'
 import { EntityNode } from './EntityNode'
 import { StatPopover } from './StatPopover'
 import { BalancePanel } from '../balance-panel/BalancePanel'
@@ -21,6 +21,19 @@ import { RocketSiloInfoPanel } from './RocketSiloInfoPanel'
 import { RoboportInfoPanel } from './RoboportInfoPanel'
 import { useEntityCatalogStore } from '../../store/entityCatalogStore'
 import { useAnimationStore } from '../../store/animationStore'
+import { useNetworksStore } from '../../store/networksStore'
+import { computeNetworks, EMPTY_NETWORKS } from '../../lib/networks'
+import { GroupStatsPanel } from './GroupStatsPanel'
+import { UndergroundRange } from './UndergroundRange'
+import {
+  autoDetectUndergroundType,
+  findUndergroundPartner,
+  isUndergroundGhostConnected,
+  undergroundAxisDistanceToPoint,
+  undergroundDirectionTo,
+  undergroundPairAnchor,
+  undergroundTileDistance,
+} from '../../lib/underground'
 
 const GRID = 32
 
@@ -66,6 +79,8 @@ export function BlueprintCanvas() {
   const setSelection = useUiStore((s) => s.setSelection)
   const addToSelection = useUiStore((s) => s.addToSelection)
   const clearSelection = useUiStore((s) => s.clearSelection)
+  const setHoveredGroupId = useUiStore((s) => s.setHoveredGroupId)
+  const hoveredEntityId = useUiStore((s) => s.hoveredEntityId)
 
   const entities = useCanvasStore((s) => s.entities)
   const catalogEntities = useEntityCatalogStore((s) => s.entities)
@@ -76,6 +91,7 @@ export function BlueprintCanvas() {
   const canPlaceAt = useCanvasStore((s) => s.canPlaceAt)
   const removeEntities = useCanvasStore((s) => s.removeEntities)
   const rotateEntities = useCanvasStore((s) => s.rotateEntities)
+  const flipUndergroundPair = useCanvasStore((s) => s.flipUndergroundPair)
   const setEntityRecipe = useCanvasStore((s) => s.setEntityRecipe)
   const undo = useCanvasStore((s) => s.undo)
   const redo = useCanvasStore((s) => s.redo)
@@ -91,6 +107,38 @@ export function BlueprintCanvas() {
   const selectedCatalogEntry = selectedEntity
     ? catalogEntities.find((e) => e.typeId === selectedEntity.typeId)
     : undefined
+
+  // Автоматические группы (сети) конвейеров/труб — см. lib/networks.ts.
+  // В режиме выделения рамкой группы полностью отключены (пустой
+  // результат, computeNetworks вообще не вызывается — экономит время).
+  // Во время живого перетаскивания (isDraggingAny) пересчёт откладывается:
+  // entities меняются на каждый mousemove, но тяжёлая функция не
+  // вызывается — переиспользуем предыдущий результат через ref, иначе
+  // пересчёт всей сети на каждый пиксель движения будет тормозить.
+  const isDraggingAny = useUiStore((s) => s.isDraggingAny)
+  const catalogByTypeId = useMemo(
+    () => new Map(catalogEntities.map((e) => [e.typeId, e])),
+    [catalogEntities],
+  )
+  const networksRef = useRef(EMPTY_NETWORKS)
+  const networks = useMemo(() => {
+    if (selectionToolActive) return EMPTY_NETWORKS
+    if (isDraggingAny) return networksRef.current
+    const result = computeNetworks(entities, catalogByTypeId)
+    networksRef.current = result
+    return result
+  }, [entities, catalogByTypeId, selectionToolActive, isDraggingAny])
+
+  useEffect(() => {
+    useNetworksStore.getState().setNetworks(networks)
+  }, [networks])
+
+  // Панель статистики группы (GroupStatsPanel) показывается по НАВЕДЕНИЮ
+  // (hoveredGroupId, см. EntityNode.tsx/uiStore.ts), а не по факту
+  // выделения — выделение остаётся нужным только для перетаскивания/
+  // удаления/поворота группы.
+  const hoveredGroupId = useUiStore((s) => s.hoveredGroupId)
+  const hoveredNetwork = hoveredGroupId ? (networks.groups.get(hoveredGroupId) ?? null) : null
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
 
@@ -144,6 +192,14 @@ export function BlueprintCanvas() {
   function handleCanvasMouseDownForPan(e: React.MouseEvent) {
     if (e.button !== 2) return // только правая кнопка
     e.preventDefault()
+    // ПКМ во время постановки (в т.ч. двухшаговой подземной — см.
+    // src/lib/underground.ts) отменяет её вместо панорамирования, как
+    // Escape — реальная игра ведёт себя так же (ПКМ с предметом в
+    // курсоре убирает его, не двигает камеру).
+    if (placing) {
+      setPlacing(null)
+      return
+    }
     panRef.current = {
       startX: e.clientX,
       startY: e.clientY,
@@ -203,7 +259,14 @@ export function BlueprintCanvas() {
     if (e.button !== 0) return
     if (e.target !== wrapRef.current) return
     if (placing) return
-    if (!selectionToolActive) return
+    if (!selectionToolActive) {
+      // Обычный режим — рамки множественного выделения тут нет, клик по
+      // пустому месту просто снимает текущее выделение (единственный
+      // способ закрыть инфо-панель станка, не трогая клавиатуру и не
+      // кликая по другой сущности).
+      clearSelection()
+      return
+    }
 
     const { x, y } = getLocalPoint(e)
     marqueeShiftRef.current = e.shiftKey
@@ -299,6 +362,8 @@ export function BlueprintCanvas() {
       craftingCategories: item.craftingCategories,
       moduleSlots: item.moduleSlots,
       recipe: item.recipe,
+      modules: item.modules,
+      extra: item.extra,
     }))
 
     const allFit = toPlace.every((p) =>
@@ -307,7 +372,60 @@ export function BlueprintCanvas() {
     if (!allFit) return
 
     if (toPlace.length === 1) {
-      addEntity(toPlace[0])
+      const item = toPlace[0]
+      const ghostBase = placing.items[0]
+      const catalogEntry = catalogByTypeId.get(item.typeId)
+      const maxDistance = catalogEntry?.ioHints?.undergroundMaxDistance
+      const isUndergroundCapable = maxDistance != null
+      const isBeltKind = catalogEntry?.ioHints?.kind === 'underground-belt'
+
+      let finalItem = item
+      // Двухшаговая постановка подземных конвейеров/труб (см.
+      // src/lib/underground.ts) — только когда сущность выбрана заново
+      // из хотбара/палитры (undergroundAutoCycle, см. Hotbar.tsx/
+      // EntityPalette.tsx). Тип (вход/выход) пишем ТОЛЬКО конвейерам
+      // (extra.type) — у труб такого поля в формате чертежа нет, связь
+      // определяется чисто геометрически (см. findUndergroundPartner).
+      let nextPlacing: PlacingState | null = null
+
+      if (isUndergroundCapable && placing.undergroundAutoCycle) {
+        if (placing.undergroundPhase === 'exit') {
+          // форсированный выход — после него возвращаемся к "входу" тем
+          // же направлением, что было у только что поставленного выхода
+          if (isBeltKind) finalItem = { ...item, extra: { ...item.extra, type: 'output' } }
+          nextPlacing = {
+            items: [ghostBase],
+            undergroundAutoCycle: true,
+            undergroundPhase: undefined,
+            undergroundEntranceAnchor: undefined,
+          }
+        } else {
+          // форсированный вход — переключаем призрак на "выход": для
+          // конвейеров то же направление (оба смотрят по ходу движения),
+          // для труб — противоположное (подземные стороны навстречу)
+          if (isBeltKind) finalItem = { ...item, extra: { ...item.extra, type: 'input' } }
+          const entranceDir = (ghostBase.direction ?? 0) as PlacingGroupItem['direction'] & number
+          const exitDirection = (isBeltKind ? entranceDir : ((entranceDir + 180) % 360)) as 0 | 90 | 180 | 270
+          nextPlacing = {
+            items: [{ ...ghostBase, direction: exitDirection }],
+            undergroundAutoCycle: true,
+            undergroundPhase: 'exit',
+            undergroundEntranceAnchor: { x: baseX, y: baseY, direction: entranceDir as 0 | 90 | 180 | 270, typeId: item.typeId },
+          }
+        }
+      } else if (isUndergroundCapable && isBeltKind) {
+        // Обычный режим (Q-подбор/вставка из буфера — undergroundAutoCycle
+        // не включён) — тип определяется автоматически по соседям.
+        const detectedType = autoDetectUndergroundType(
+          { x: item.x, y: item.y, direction: item.direction, typeId: item.typeId },
+          entities,
+          catalogByTypeId,
+        )
+        finalItem = { ...item, extra: { ...item.extra, type: detectedType } }
+      }
+
+      const added = addEntity(finalItem)
+      if (added && nextPlacing) setPlacing(nextPlacing)
     } else {
       const newIds = addEntities(toPlace)
       setSelection(newIds)
@@ -375,8 +493,43 @@ export function BlueprintCanvas() {
         e.preventDefault()
         const delta: 1 | -1 = e.shiftKey ? -1 : 1
         if (placing) {
-          setPlacing({ items: placing.items.map((item) => rotatePlacingItem(item, delta)) })
-        } else if (selectedEntityIds.size > 0) {
+          // ...placing сохраняет undergroundAutoCycle/undergroundPhase/
+          // undergroundEntranceAnchor — R в фазе выхода просто крутит
+          // направление ОДНОЙ выходной части, как обычный призрак (см.
+          // src/lib/underground.ts), якорь входа не трогаем.
+          setPlacing({ ...placing, items: placing.items.map((item) => rotatePlacingItem(item, delta)) })
+          return
+        }
+        // Наведение + R — поворот ОДНОЙ сущности под курсором, работает в
+        // любом режиме (включая режим выделения рамкой) и не требует
+        // предварительного выделения. Если сущность состоит в сети
+        // конвейеров/труб (lib/networks.ts), поворачивается только она —
+        // rotateEntities всегда получает набор ровно из одного id, соседи
+        // по группе не трогаются. Приоритет над поворотом по выделению
+        // (запасной способ ниже), чтобы можно было навести на другую
+        // сущность и повернуть именно её, не снимая текущее выделение.
+        const hoveredEl = (document.elementFromPoint(lastMouse.current.x, lastMouse.current.y) as HTMLElement | null)
+          ?.closest('[data-entity-id]') as HTMLElement | null
+        if (hoveredEl) {
+          const hoveredId = Number(hoveredEl.dataset.entityId)
+          if (!Number.isNaN(hoveredId)) {
+            // Уже СВЯЗАННАЯ пара подземных конвейеров/труб — R разворачивает
+            // весь пролёт на 180° сразу у обеих частей (не обычный шаг
+            // ±90° у одной: это увело бы вторую половину с оси связи и
+            // разорвало бы пару). См. canvasStore.flipUndergroundPair.
+            const hoveredEntity = entities.find((en) => en.id === hoveredId)
+            const partner = hoveredEntity
+              ? findUndergroundPartner(hoveredEntity, entities, catalogByTypeId)
+              : null
+            if (hoveredEntity && partner) {
+              flipUndergroundPair(hoveredEntity.id, partner.id)
+            } else {
+              rotateEntities(new Set([hoveredId]), delta)
+            }
+            return
+          }
+        }
+        if (selectedEntityIds.size > 0) {
           rotateEntities(selectedEntityIds, delta)
         }
         return
@@ -432,12 +585,14 @@ export function BlueprintCanvas() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [
     entities,
+    catalogByTypeId,
     selectedEntityIds,
     clipboardBuffer,
     placing,
     setPlacing,
     removeEntities,
     rotateEntities,
+    flipUndergroundPair,
     clearSelection,
     copyToClipboard,
     addEntities,
@@ -462,6 +617,72 @@ export function BlueprintCanvas() {
         )
       : false
 
+  // Подсказка дальности подземного конвейера/трубы (см.
+  // src/lib/underground.ts, UndergroundRange.tsx) — в фазе выхода
+  // двухшаговой постановки показываем от уже поставленного входа
+  // (приоритет), иначе — от сущности под курсором (hoveredEntityId;
+  // подавляем, пока вообще что-то ставится, чтобы не путать с фазовым
+  // оверлеем/не мешать обычной постановке).
+  //
+  // Длина полосы во время постановки — РЕАЛЬНОЕ расстояние от входа до
+  // ТЕКУЩЕЙ позиции призрака (растёт вместе с курсором, как в игре), а
+  // не сразу максимум каталога — иначе полоса показывает шевроны ДАЛЬШЕ
+  // призрака, что и не нужно, и вводит в заблуждение. Если призрак не на
+  // оси входа вообще (null) — полосы не показываем вовсе.
+  const undergroundAnchor = placing?.undergroundPhase === 'exit' ? (placing.undergroundEntranceAnchor ?? null) : null
+  const undergroundAnchorCatalogMax = undergroundAnchor
+    ? (catalogByTypeId.get(undergroundAnchor.typeId)?.ioHints?.undergroundMaxDistance ?? null)
+    : null
+  const undergroundAnchorDistance = (() => {
+    if (!undergroundAnchor || undergroundAnchorCatalogMax == null || !ghostItemsWithPos[0]) return null
+    const toGhostDistance = undergroundAxisDistanceToPoint(undergroundAnchor, ghostItemsWithPos[0], catalogByTypeId)
+    if (toGhostDistance === null || toGhostDistance < 1) return null
+    return Math.min(toGhostDistance, undergroundAnchorCatalogMax)
+  })()
+
+  const hoveredUndergroundEntity =
+    !placing && hoveredEntityId ? (entities.find((e) => e.id === hoveredEntityId) ?? null) : null
+  // Подсказка по наведению на уже стоящую сущность — ТОЛЬКО если у неё
+  // реально есть партнёр (findUndergroundPartner). Одиночная, ни с кем
+  // не связанная подземная часть никакой подсказки не показывает вовсе —
+  // в игре зона максимальной досягаемости по наведению не рисуется,
+  // только фактическая связь.
+  const hoveredUndergroundPartner = hoveredUndergroundEntity
+    ? findUndergroundPartner(hoveredUndergroundEntity, entities, catalogByTypeId)
+    : null
+  // Канонический якорь пары (undergroundPairAnchor) — оверлей строится
+  // ВСЕГДА от одной и той же из двух сущностей, независимо от того, на
+  // какой конец пары навели курсором: иначе сторона/направление шевронов
+  // "прыгали" бы между противоположными при переключении наведения между
+  // концами одной и той же связи, хотя это один и тот же физический
+  // пролёт и должен выглядеть одинаково.
+  const [undergroundHoverAnchor, undergroundHoverPartner] = hoveredUndergroundPartner
+    ? undergroundPairAnchor(hoveredUndergroundEntity!, hoveredUndergroundPartner)
+    : [null, null]
+  const hoveredUndergroundDirection = undergroundHoverPartner
+    ? undergroundDirectionTo(undergroundHoverAnchor!, undergroundHoverPartner)
+    : undefined
+  // Куда физически тянется полоса (к партнёру) — может не совпадать с
+  // тем, куда "смотрит" сама связь. У конвейеров обе части пары делят
+  // ОДИН И ТОТ ЖЕ entity.direction (правило связи) — именно его и
+  // показываем шевронами, а не геометрическое направление к партнёру
+  // (которое зависит от того, какая из двух физически лежит "сзади").
+  const hoveredUndergroundChevronDirection = undergroundHoverAnchor?.direction
+  const hoveredUndergroundMaxDistance = undergroundHoverPartner
+    ? undergroundTileDistance(undergroundHoverAnchor!, undergroundHoverPartner)
+    : null
+
+  // Призрак (вторая/выходная часть) стоит в зоне связи с якорем входа —
+  // подсветка зелёной рамкой (см. PlacementGhost.tsx).
+  const ghostConnects =
+    undergroundAnchor && ghostItemsWithPos[0]
+      ? isUndergroundGhostConnected(
+          undergroundAnchor,
+          { x: ghostItemsWithPos[0].x, y: ghostItemsWithPos[0].y, direction: ghostItemsWithPos[0].direction },
+          catalogByTypeId,
+        )
+      : false
+
   const marqueeRect = marquee
     ? {
         left: Math.min(marquee.startX, marquee.x),
@@ -471,6 +692,12 @@ export function BlueprintCanvas() {
       }
     : null
 
+  // Инфо-панель (рецепт станка, инсертер и т.п.) открывается только от
+  // клика в ОБЫЧНОМ режиме (как и до сетей/группировки) — режим
+  // выделения рамкой нужен для построения набора на пакетные операции
+  // (удаление/копирование/перенос), а не для настройки одной сущности,
+  // поэтому там клик выделяет (см. EntityNode.handleMouseUp), но панель
+  // показывать не должен.
   const canShowEntityPanel = Boolean(selectedEntity) && lastSelectionSource === 'click' && !selectionToolActive
   type PanelKind = 'inserter' | 'loader' | 'mining-drill' | 'lab' | 'rocket-silo' | 'roboport' | 'machine' | 'stat' | null
   const panelKind: PanelKind = !canShowEntityPanel || !selectedEntity
@@ -519,15 +746,38 @@ export function BlueprintCanvas() {
         {ghostItemsWithPos.map((item, i) => (
           <PlacementGhost
             key={i}
+            typeId={item.typeId}
             icon={item.icon}
             label={item.label}
             x={item.x}
             y={item.y}
             width={item.width}
             height={item.height}
+            direction={item.direction}
             blocked={ghostBlocked}
+            connects={ghostConnects}
           />
         ))}
+
+        {undergroundAnchor && undergroundAnchorDistance != null && (
+          <UndergroundRange
+            key={`anchor-${undergroundAnchor.x}-${undergroundAnchor.y}-${undergroundAnchor.direction}`}
+            x={undergroundAnchor.x}
+            y={undergroundAnchor.y}
+            direction={undergroundAnchor.direction}
+            maxDistance={undergroundAnchorDistance}
+          />
+        )}
+        {!undergroundAnchor && undergroundHoverAnchor && hoveredUndergroundMaxDistance != null && (
+          <UndergroundRange
+            key={`hover-${undergroundHoverAnchor.id}-${hoveredUndergroundDirection}-${hoveredUndergroundMaxDistance}`}
+            x={undergroundHoverAnchor.x}
+            y={undergroundHoverAnchor.y}
+            direction={hoveredUndergroundDirection}
+            chevronDirection={hoveredUndergroundChevronDirection}
+            maxDistance={hoveredUndergroundMaxDistance}
+          />
+        )}
 
         {marqueeRect && <div className="marquee-box" style={marqueeRect} />}
       </div>
@@ -592,6 +842,14 @@ export function BlueprintCanvas() {
       )}
       {panelKind === 'stat' && selectedEntity && (
         <StatPopover entity={selectedEntity} />
+      )}
+      {hoveredNetwork && (
+        <GroupStatsPanel
+          network={hoveredNetwork}
+          catalogByTypeId={catalogByTypeId}
+          connectedPorts={networks.connectedPorts}
+          onClose={() => setHoveredGroupId(null)}
+        />
       )}
 
       <ImportExportPanel />

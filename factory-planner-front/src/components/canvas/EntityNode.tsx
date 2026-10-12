@@ -9,10 +9,14 @@ import { useRecipeCatalogStore } from '../../store/recipeCatalogStore'
 import type { Recipe } from '../../lib/api/recipes'
 import { useAnimationStore } from '../../store/animationStore'
 import { computePipeVariantKey } from '../../lib/pipeConnections'
+import { computeIoHints, type IoHintPrimitive, type NetworkRenderInfo } from '../../lib/ioHints'
+import { IoHints } from './IoHints'
+import { useNetworksStore } from '../../store/networksStore'
 
 const EMPTY_ENTITIES: PlacedEntity[] = []
 const EMPTY_CATALOG: CatalogEntity[] = []
 const EMPTY_RECIPES: Recipe[] = []
+const EMPTY_IO_HINTS: IoHintPrimitive[] = []
 
 interface Props {
   entity: PlacedEntity
@@ -23,17 +27,75 @@ interface Props {
 const DELETE_HOLD_MS = 1500
 
 export function EntityNode({ entity, selected, onSelect }: Props) {
-  const moveEntityLive = useCanvasStore((s) => s.moveEntityLive)
-  const commitMove = useCanvasStore((s) => s.commitMove)
+  const moveEntitiesLive = useCanvasStore((s) => s.moveEntitiesLive)
+  const commitEntitiesMove = useCanvasStore((s) => s.commitEntitiesMove)
   const removeEntity = useCanvasStore((s) => s.removeEntity)
   const removeEntities = useCanvasStore((s) => s.removeEntities)
   const setEntityRecipe = useCanvasStore((s) => s.setEntityRecipe)
   const selectedEntityIds = useUiStore((s) => s.selectedEntityIds)
   const clearSelection = useUiStore((s) => s.clearSelection)
   const setDeleteHoldProgress = useUiStore((s) => s.setDeleteHoldProgress)
+  const useRealSprites = useUiStore((s) => s.useRealSprites)
+  const showDirectionArrow = useUiStore((s) => s.showDirectionArrow)
+  const selectionToolActive = useUiStore((s) => s.selectionToolActive)
+  const setDraggingAny = useUiStore((s) => s.setDraggingAny)
+  const hoveredGroupId = useUiStore((s) => s.hoveredGroupId)
+  const setHoveredGroupId = useUiStore((s) => s.setHoveredGroupId)
+  const setHoveredEntityId = useUiStore((s) => s.setHoveredEntityId)
   const copyRecipeToClipboard = useRecipeClipboardStore((s) => s.copy)
   const recipeClipboardEntry = useRecipeClipboardStore((s) => s.entry)
   const catalogEntry = useEntityCatalogStore((s) => s.entities.find((e) => e.typeId === entity.typeId))
+
+  // Автоматическая группа (сеть конвейеров/труб, см. lib/networks.ts) —
+  // в режиме выделения рамкой networksStore всегда пуст (BlueprintCanvas
+  // не вызывает computeNetworks вовсе), так что groupIds там естественным
+  // образом всегда undefined — отдельной проверки на selectionToolActive
+  // в выборках ниже не нужно.
+  const networkGroupId = useNetworksStore((s) => s.groupOf.get(entity.id))
+  const networkGroup = useNetworksStore((s) => (networkGroupId ? s.groups.get(networkGroupId) : undefined))
+  const networkConnectedPorts = useNetworksStore((s) => s.connectedPorts)
+  const groupIds = networkGroup && networkGroup.ids.length > 1 ? networkGroup.ids : null
+  // Подсветка группы целиком по наведению (не по клику) — см. GroupStatsPanel.
+  // !selectionToolActive — доп. подстраховка на случай, если режим выделения
+  // включили, пока курсор уже стоял над сущностью (hoveredGroupId мог не
+  // успеть сброситься естественным mouseleave).
+  const isGroupHovered = !selectionToolActive && !!groupIds && hoveredGroupId === networkGroupId
+
+  // Подсказка дальности подземного конвейера/трубы по наведению (см.
+  // src/lib/underground.ts, UndergroundRange.tsx) — отдельно от
+  // hoveredGroupId, не связано с группировкой лент/труб.
+  const isUndergroundCapable = catalogEntry?.ioHints?.undergroundMaxDistance != null
+
+  function handleMouseEnter() {
+    if (!selectionToolActive && groupIds) setHoveredGroupId(networkGroupId!)
+    if (isUndergroundCapable) setHoveredEntityId(entity.id)
+  }
+  function handleMouseLeave() {
+    if (hoveredGroupId === networkGroupId) setHoveredGroupId(null)
+    if (isUndergroundCapable) setHoveredEntityId(null)
+  }
+
+  // Инфо для IoHints (см. lib/ioHints.ts, NetworkRenderInfo) — какую роль
+  // ИМЕННО эта сущность играет в своей сети (конец/середина) и какие её
+  // собственные жидкостные порты заняты подключённой трубой. Отдельно от
+  // groupIds выше: connectedPortIndexes нужен ЛЮБОЙ сущности с fluidPorts
+  // (насосам, котлам, машинам), а не только лентам/трубам, у которых есть
+  // полноценная запись в groupOf.
+  const networkInfo = useMemo((): NetworkRenderInfo => {
+    const endpoints = networkGroup
+      ? networkGroup.endpoints
+          .filter((ep) => ep.entityId === entity.id)
+          .map((ep) => ({ role: ep.role, direction: ep.direction }))
+      : []
+    const connectedPortIndexes = new Set<number>()
+    const ports = catalogEntry?.ioHints?.fluidPorts
+    if (ports) {
+      for (const port of ports) {
+        if (networkConnectedPorts.has(`${entity.id}:${port.index}`)) connectedPortIndexes.add(port.index)
+      }
+    }
+    return { isTracked: !!networkGroupId, endpoints, connectedPortIndexes }
+  }, [networkGroup, networkGroupId, entity.id, catalogEntry, networkConnectedPorts])
 
   // Для труб/трубоподобных сущностей (есть pipeSpriteVariants в каталоге)
   // картинка зависит от того, с какой стороны стоит соседняя труба —
@@ -68,17 +130,26 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
   // Патрубок жидкостного fluid_box у сборочных машин — виден только пока
   // у ВЫБРАННОГО рецепта есть жидкостный ingredient (для входного
   // патрубка) или result (для выходного) — как fluid_boxes_off_when_no_
-  // fluid_recipe в самой игре. Подписка на каталог рецептов условная —
-  // у машин без fluidPipeOverlays (нет отдельного слоя патрубка в данных
-  // игры) не подписываемся вовсе.
+  // fluid_recipe в самой игре. Подсказки входов/выходов (IoHints) для
+  // sущностей с рецептом (kind==='crafting') тоже нуждаются в объекте
+  // рецепта — раскладка предметных стрелок и сопоставление жидкостных
+  // портов без фиксированного filter. Подписка на каталог рецептов
+  // ОДНА общая и условная — не подписываемся вовсе, если ни то, ни
+  // другое сущности не нужно.
   const hasFluidOverlays = !!catalogEntry?.fluidPipeOverlays?.length
-  const recipesForFluidOverlays = useRecipeCatalogStore((s) => (hasFluidOverlays ? s.recipes : EMPTY_RECIPES))
+  const showIoHints = useUiStore((s) => s.showIoHints)
+  const needsCraftingRecipe = !useRealSprites && showIoHints && catalogEntry?.ioHints?.kind === 'crafting'
+  const needsRecipeCatalog = hasFluidOverlays || needsCraftingRecipe
+  const recipeCatalog = useRecipeCatalogStore((s) => (needsRecipeCatalog ? s.recipes : EMPTY_RECIPES))
+  const selectedRecipe = useMemo(() => {
+    if (!entity.recipe) return null
+    return recipeCatalog.find((r) => r.name === entity.recipe) ?? null
+  }, [entity.recipe, recipeCatalog])
+
   const fluidOverlays = useMemo(() => {
-    if (!hasFluidOverlays || !entity.recipe) return null
-    const recipe = recipesForFluidOverlays.find((r) => r.name === entity.recipe)
-    if (!recipe) return null
-    const hasFluidIngredient = recipe.ingredients.some((i) => i.type === 'fluid')
-    const hasFluidResult = recipe.results.some((r) => r.type === 'fluid')
+    if (!hasFluidOverlays || !selectedRecipe) return null
+    const hasFluidIngredient = selectedRecipe.ingredients.some((i) => i.type === 'fluid')
+    const hasFluidResult = selectedRecipe.results.some((r) => r.type === 'fluid')
     if (!hasFluidIngredient && !hasFluidResult) return null
     const list = catalogEntry!.fluidPipeOverlays!.filter((o) =>
       o.productionType === 'input'
@@ -88,7 +159,19 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
           : hasFluidIngredient || hasFluidResult,
     )
     return list.length ? list : null
-  }, [hasFluidOverlays, entity.recipe, recipesForFluidOverlays, catalogEntry])
+  }, [hasFluidOverlays, selectedRecipe, catalogEntry])
+
+  // Подсказки входов/выходов — только в режиме "квадрат с иконкой" (см.
+  // EntityNode ниже) и когда включена галочка. Зависимости памоизации
+  // сужены до конкретных полей entity (а не всего объекта), чтобы
+  // перетаскивание (меняет entity.x/y на каждый пиксель) не пересчитывало
+  // геометрию подсказок впустую.
+  const hasIoHints = !useRealSprites && showIoHints && !!catalogEntry?.ioHints
+  const ioHintPrimitives = useMemo(() => {
+    if (!hasIoHints) return EMPTY_IO_HINTS
+    return computeIoHints(entity, catalogEntry, selectedRecipe, networkInfo)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasIoHints, entity.width, entity.height, entity.direction, catalogEntry, selectedRecipe, networkInfo])
 
   // Реальная покадровая анимация — только если у сущности реально нарезана
   // полоса из нескольких кадров (spriteFrameCount > 1) и известен размер
@@ -105,7 +188,13 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
   const isAnimated = frameCount > 1 && !!catalogEntry?.entitySprite && !!frameW && !!frameH && !directionalSprite
   const tick = useAnimationStore((s) => (isAnimated ? s.tick : 0))
 
-  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number; moved: boolean } | null>(null)
+  const dragRef = useRef<{
+    ids: number[]
+    origins: Map<number, { x: number; y: number }>
+    startX: number
+    startY: number
+    moved: boolean
+  } | null>(null)
   const deleteHoldRef = useRef<{ raf: number } | null>(null)
   const pasteDragCleanupRef = useRef<(() => void) | null>(null)
 
@@ -126,6 +215,12 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
   function finishDeleteHold() {
     if (selectedEntityIds.has(entity.id) && selectedEntityIds.size > 1) {
       removeEntities(selectedEntityIds)
+      clearSelection()
+    } else if (!selectionToolActive && groupIds) {
+      // Обычный режим, сущность — часть сети конвейеров/труб: ПКМ-
+      // удержание без предварительного выделения удаляет всю группу
+      // целиком (как и перетаскивание/клик, см. handleMouseDown/Up).
+      removeEntities(new Set(groupIds))
       clearSelection()
     } else {
       removeEntity(entity.id)
@@ -203,6 +298,32 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
     [],
   )
 
+  // Сущность исчезает (удалена/перестала рендериться) или перегруппировалась
+  // пока была под курсором — не оставляем "подвисшую" подсветку группы без
+  // mouseleave, который в этом случае не успеет сработать. Отдельный эффект
+  // от cleanupDeleteHold/paste-drag выше — те должны прерываться ТОЛЬКО на
+  // реальном unmount, а не на каждой смене networkGroupId при перегруппировке.
+  useEffect(
+    () => () => {
+      if (useUiStore.getState().hoveredGroupId === networkGroupId) {
+        useUiStore.getState().setHoveredGroupId(null)
+      }
+    },
+    [networkGroupId],
+  )
+
+  // Та же подстраховка для hoveredEntityId (подсказка дальности подземного
+  // конвейера/трубы) — сущность может исчезнуть (удаление, undo) пока
+  // стоит под курсором, mouseleave в этом случае не произойдёт.
+  useEffect(
+    () => () => {
+      if (useUiStore.getState().hoveredEntityId === entity.id) {
+        useUiStore.getState().setHoveredEntityId(null)
+      }
+    },
+    [entity.id],
+  )
+
   function handleMouseDown(e: React.MouseEvent) {
     e.stopPropagation()
 
@@ -228,11 +349,23 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
       return
     }
 
+    // Группа (сеть конвейеров/труб, см. lib/networks.ts) двигается и
+    // выделяется ЦЕЛИКОМ в обычном режиме; Alt — запасной способ достать
+    // одну сущность из группы, не переключая режим выделения.
+    const isGroupTarget = !selectionToolActive && !e.altKey && !!groupIds
+    const dragIds = isGroupTarget ? groupIds! : [entity.id]
+    const allEntities = useCanvasStore.getState().entities
+    const origins = new Map<number, { x: number; y: number }>()
+    for (const id of dragIds) {
+      const en = allEntities.find((x) => x.id === id)
+      origins.set(id, { x: en?.x ?? entity.x, y: en?.y ?? entity.y })
+    }
+
     dragRef.current = {
+      ids: dragIds,
+      origins,
       startX: e.clientX,
       startY: e.clientY,
-      origX: entity.x,
-      origY: entity.y,
       moved: false,
     }
     window.addEventListener('mousemove', handleMouseMove)
@@ -243,14 +376,28 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
     if (!dragRef.current) return
     const dx = e.clientX - dragRef.current.startX
     const dy = e.clientY - dragRef.current.startY
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragRef.current.moved = true
-    moveEntityLive(entity.id, dragRef.current.origX + dx, dragRef.current.origY + dy)
+    if (!dragRef.current.moved && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+      dragRef.current.moved = true
+      setDraggingAny(true)
+    }
+    moveEntitiesLive(dragRef.current.ids, dx, dy, dragRef.current.origins)
   }
 
   function handleMouseUp(e: MouseEvent) {
     if (dragRef.current) {
       if (dragRef.current.moved) {
-        commitMove(entity.id, dragRef.current.origX, dragRef.current.origY)
+        commitEntitiesMove(dragRef.current.ids, dragRef.current.origins)
+        setDraggingAny(false)
+      } else if (!selectionToolActive && groupIds && !e.altKey) {
+        // Клик по СГРУППИРОВАННОЙ ленте/трубе в обычном режиме ничего не
+        // выделяет (ни группу, ни её саму) — подсветка группы теперь
+        // только по наведению (isGroupHovered), поворот — наведением + R
+        // (см. KeyR в BlueprintCanvas). Alt+клик по-прежнему пробивается
+        // в onSelect — запасной способ достать одну сущность из группы.
+        // НЕгруппированные сущности (обычные станки, инсертеры и т.п.)
+        // сюда не попадают — для них клик в обычном режиме выделяет и
+        // открывает инфо-панель/подбор рецепта как раньше, это отдельная,
+        // не связанная с сетями механика.
       } else {
         onSelect(e.shiftKey)
       }
@@ -262,7 +409,8 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
 
   const classNames = [
     'entity',
-    selected ? 'e-selected' : '',
+    useRealSprites ? '' : 'entity-simple',
+    selected || isGroupHovered ? 'e-selected' : '',
     entity.bottleneck ? 'e-bottleneck' : '',
   ]
     .filter(Boolean)
@@ -312,9 +460,27 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
         zIndex: Math.round(entity.y),
       }}
       onMouseDown={handleMouseDown}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       onClick={(e) => e.stopPropagation()}
     >
-      {isAnimated ? (
+      {!useRealSprites ? (
+        // Режим "Реальные спрайты" выключен — плейсхолдер-квадрат с
+        // маленькой иконкой каталога (НЕ entitySprite) вместо настоящей
+        // игровой графики; никаких pipeVariant/fluidOverlays/анимации.
+        // Стрелка направления — только у обычных построек: у труб R не
+        // меняет картинку вообще (свой механизм выбора по соседям), так
+        // что показывать стрелку для них было бы вводящим в заблуждение.
+        <>
+          <img
+            src={catalogEntry?.icon ?? entity.icon}
+            alt={entity.label}
+            className="entity-simple-icon"
+          />
+          {!isPipeLike && showDirectionArrow && <div className={`entity-direction-arrow dir-${entity.direction ?? 0}`} />}
+          <IoHints width={entity.width} height={entity.height} hints={ioHintPrimitives} />
+        </>
+      ) : isAnimated ? (
         <div
           className="entity-sprite entity-sprite-anim"
           style={{
@@ -345,7 +511,7 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
           }}
         />
       )}
-      {fluidOverlays?.map((overlay, i) => {
+      {useRealSprites && fluidOverlays?.map((overlay, i) => {
         const oW = overlay.frameWidth * overlay.scale
         const oH = overlay.frameHeight * overlay.scale
         // connectionPositionX/Y — позиция самой точки подключения

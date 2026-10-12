@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ModuleStackEntry } from '../lib/blueprint/modules.ts'
 
 export type EntityDirection = 0 | 90 | 180 | 270
 
@@ -23,6 +24,16 @@ export interface PlacedEntity {
   craftingCategories?: string[]
   moduleSlots?: number
   config?: Record<string, unknown>
+  // Модули в слотах (entities[].items чертежа) — см. lib/blueprint/modules.ts.
+  // Своего UI для их выбора пока нет, появляются только через импорт
+  // чертежа и сохраняются для обратного экспорта без потерь.
+  modules?: ModuleStackEntry[]
+  // Сырые поля сущности чертежа Factorio, которые не разобраны в
+  // собственные поля модели (type у underground-belt/loader "input"/
+  // "output", filters, control_behavior, quality и т.д.) — см.
+  // lib/blueprint/extra.ts. Сохраняются и пишутся обратно при экспорте
+  // без изменений, чтобы импорт-экспорт чертежа из игры не терял настройки.
+  extra?: Record<string, unknown>
 }
 
 export interface PlacingGroupItem {
@@ -38,10 +49,25 @@ export interface PlacingGroupItem {
   craftingCategories?: string[]
   moduleSlots?: number
   recipe?: string | null
+  modules?: ModuleStackEntry[]
+  extra?: Record<string, unknown>
 }
 
 export interface PlacingState {
   items: PlacingGroupItem[]
+  // Двухшаговая постановка подземных конвейеров/труб (см.
+  // src/lib/underground.ts) — true только когда сущность выбрана ЗАНОВО
+  // из хотбара/палитры (Hotbar.tsx/EntityPalette.tsx). Подхват
+  // существующей (Q), вставка из буфера/чертежа и т.п. эту механику НЕ
+  // включают — там тип определяется автоматически по соседям в момент
+  // постановки, без форсирования и без переключения фазы.
+  undergroundAutoCycle?: boolean
+  // 'exit' — items[0] это форсированная "выходная" часть пары, привязанная
+  // к undergroundEntranceAnchor (уже поставленной "входной" части).
+  // undefined (при undergroundAutoCycle=true) — items[0] это
+  // "входная" часть, которая при постановке переключит фазу на 'exit'.
+  undergroundPhase?: 'exit'
+  undergroundEntranceAnchor?: { x: number; y: number; direction: EntityDirection; typeId: string }
 }
 
 interface Rect {
@@ -82,9 +108,25 @@ interface CanvasStore {
   addEntities: (list: Omit<PlacedEntity, 'id'>[]) => number[]
   moveEntityLive: (id: number, x: number, y: number) => void
   commitMove: (id: number, origX: number, origY: number) => void
+  // Групповое перетаскивание (автоматические сети конвейеров/труб, см.
+  // lib/networks.ts) — та же дельта применяется ко ВСЕМ id сразу,
+  // атомарно (если хоть один упирается в соседа вне группы — не
+  // двигаем НИКОГО, вся группа остаётся на месте, как moveEntityLive
+  // молча отклоняет недопустимое перемещение одной сущности).
+  moveEntitiesLive: (ids: number[], dx: number, dy: number, origins: Map<number, { x: number; y: number }>) => void
+  commitEntitiesMove: (ids: number[], origins: Map<number, { x: number; y: number }>) => void
   removeEntity: (id: number) => void
   removeEntities: (ids: Set<number>) => void
   rotateEntities: (ids: Set<number>, deltaSteps: 1 | -1) => void
+  // R по уже связанной паре подземных конвейеров/труб (см.
+  // src/lib/underground.ts, findUndergroundPartner) — в игре это не
+  // поворот на 90°, а разворот всего пролёта на 180° сразу у обеих
+  // частей (иначе ось связи ломается — поворот на 90° увёл бы вторую
+  // половину с линии связи). Для лент дополнительно меняет местами
+  // extra.type (вход/выход) — физически именно вход и выход меняются
+  // ролями при развороте потока. Обе сущности всегда 1x1, свап width/
+  // height (как у rotateEntities) не нужен.
+  flipUndergroundPair: (idA: number, idB: number) => void
   canPlaceAt: (rect: Rect, excludeId?: number) => boolean
 
   undo: () => void
@@ -199,6 +241,60 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       set({ past: [...past, snapshot].slice(-MAX_HISTORY), future: [] })
     },
 
+    moveEntitiesLive: (ids, dx, dy, origins) => {
+      if (ids.length === 0) return
+      const { entities } = get()
+      const idSet = new Set(ids)
+
+      const newPositions = new Map<number, { x: number; y: number }>()
+      for (const id of ids) {
+        const origin = origins.get(id)
+        if (!origin) continue
+        newPositions.set(id, {
+          x: Math.round((origin.x + dx) / GRID) * GRID,
+          y: Math.round((origin.y + dy) / GRID) * GRID,
+        })
+      }
+
+      // Коллизия — только относительно сущностей ВНЕ группы: при сдвиге
+      // на одинаковую дельту взаимное расположение членов группы не
+      // меняется, друг с другом они столкнуться не могут.
+      for (const e of entities) {
+        if (!idSet.has(e.id)) continue
+        const pos = newPositions.get(e.id)
+        if (!pos) continue
+        const rect: Rect = { x: pos.x, y: pos.y, width: e.width, height: e.height }
+        const blocked = entities.some((other) => !idSet.has(other.id) && isOverlapping(rect, other))
+        if (blocked) return // атомарно — не двигаем никого из группы
+      }
+
+      set({
+        entities: entities.map((e) => {
+          const pos = newPositions.get(e.id)
+          return pos ? { ...e, x: pos.x, y: pos.y } : e
+        }),
+      })
+    },
+
+    commitEntitiesMove: (ids, origins) => {
+      if (ids.length === 0) return
+      const idSet = new Set(ids)
+      const { entities, past, nextId } = get()
+
+      let anyMoved = false
+      const rolledBackEntities = entities.map((e) => {
+        if (!idSet.has(e.id)) return e
+        const origin = origins.get(e.id)
+        if (!origin) return e
+        if (e.x !== origin.x || e.y !== origin.y) anyMoved = true
+        return { ...e, x: origin.x, y: origin.y }
+      })
+      if (!anyMoved) return
+
+      const snapshot: Snapshot = { entities: rolledBackEntities, nextId }
+      set({ past: [...past, snapshot].slice(-MAX_HISTORY), future: [] })
+    },
+
     removeEntity: (id) => {
       pushHistory()
       set((state) => ({ entities: state.entities.filter((e) => e.id !== id) }))
@@ -238,6 +334,27 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
 
       pushHistory()
       set({ entities: rotated })
+    },
+
+    flipUndergroundPair: (idA, idB) => {
+      const { entities } = get()
+      const a = entities.find((e) => e.id === idA)
+      const b = entities.find((e) => e.id === idB)
+      if (!a || !b) return
+
+      const flipType = (extra: Record<string, unknown> | undefined) => {
+        if (!extra || (extra.type !== 'input' && extra.type !== 'output')) return extra
+        return { ...extra, type: extra.type === 'input' ? 'output' : 'input' }
+      }
+
+      pushHistory()
+      set({
+        entities: entities.map((e) => {
+          if (e.id !== idA && e.id !== idB) return e
+          const newDirection = (((e.direction ?? 0) + 180) % 360) as PlacedEntity['direction']
+          return { ...e, direction: newDirection, extra: flipType(e.extra) }
+        }),
+      })
     },
 
     undo: () => {

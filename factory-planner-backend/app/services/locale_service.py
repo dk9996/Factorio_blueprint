@@ -156,3 +156,32 @@ def get_recipe_name_locale() -> dict[str, str]:
     result = dict(item_names)
     result.update(recipe_names)
     return result
+
+
+def get_fluid_name_locale() -> dict[str, str]:
+    """Возвращает {fluid_technical_id: человекочитаемое_имя} из секции
+    [fluid-name] всех .cfg файлов — для подписи жидкостных портов
+    (см. io_hints_service.py)."""
+    result: dict[str, str] = {}
+    mod_sources = build_mod_sources()
+
+    for lang in PREFERRED_LANGS:
+        for locale_dir in _base_locale_dirs(lang):
+            for cfg_path in locale_dir.rglob("*.cfg"):
+                try:
+                    text = cfg_path.read_bytes().decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for key, value in _parse_section(text, "fluid-name").items():
+                    result.setdefault(key, value)
+
+        for mod_name, source in mod_sources.items():
+            for rel_path in source.list_files(f"locale/{lang}", ".cfg"):
+                data = source.read_bytes(rel_path)
+                if not data:
+                    continue
+                text = data.decode("utf-8", errors="ignore")
+                for key, value in _parse_section(text, "fluid-name").items():
+                    result.setdefault(key, value)
+
+    return result

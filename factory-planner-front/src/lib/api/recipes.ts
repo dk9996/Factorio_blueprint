@@ -6,6 +6,10 @@ export interface RecipeIngredient {
   type: 'item' | 'fluid'
   icon: string | null
   hidden: boolean
+  // Только у type==='fluid' — для подсказок жидкостных портов
+  // (см. src/lib/ioHints.ts), у предметных ингредиентов всегда null.
+  fluidboxIndex: number | null
+  color: [number, number, number] | null
 }
 
 export interface Recipe {

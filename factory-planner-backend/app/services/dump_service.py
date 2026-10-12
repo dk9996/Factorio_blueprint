@@ -9,9 +9,10 @@ from app.services.entity_sprite_service import (
     build_fluid_overlay_map,
     build_directional_sprite_map,
 )
-from app.services.locale_service import get_item_group_locale, get_entity_name_locale
+from app.services.locale_service import get_item_group_locale, get_entity_name_locale, get_fluid_name_locale
 from app.services.recipe_service import build_recipe_catalog
 from app.services.category_service import CategoryResolver
+from app.services.io_hints_service import build_io_hints
 
 DUMP_CACHE_PATH = Path("data/cache/data-raw-dump.json")
 CATALOG_CACHE_PATH = Path("data/cache/entity_catalog.json")
@@ -334,6 +335,8 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
 
     locale_map = get_item_group_locale()
     entity_name_map = get_entity_name_locale()
+    fluid_locale_map = get_fluid_name_locale()
+    fluids = raw.get("fluid", {})
     resolver = CategoryResolver(raw, locale_map)
 
     icon_sizes = build_icon_size_map(raw)
@@ -424,6 +427,11 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "craftingSpeed": proto.get("crafting_speed"),
                 "miningSpeed": proto.get("mining_speed"),
                 "researchingSpeed": proto.get("researching_speed"),
+                # Скорость конвейера/погрузчика/сплиттера (тайлов/тик) —
+                # у остальных типов сущностей этого поля в прототипе нет,
+                # будет null. Нужна для статистики по группе-сети конвейеров
+                # (см. src/lib/networks.ts, GroupStatsPanel.tsx).
+                "speed": proto.get("speed"),
                 "rocketPartsRequired": proto.get("rocket_parts_required"),
                 "filterCount": proto.get("filter_count", 0),
                 "bulkInserterConfig": _looks_like_bulk_inserter(name, proto),
@@ -437,6 +445,10 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 ),
                 "directionalSprites": _build_directional_sprites_field(
                     name, directional_sprite_frames, existing_directional_files
+                ),
+                "ioHints": build_io_hints(
+                    section_name, proto, bool(proto.get("crafting_categories")),
+                    fluids, fluid_locale_map,
                 ),
             })
             entity_type_counts[section_name] = entity_type_counts.get(section_name, 0) + 1

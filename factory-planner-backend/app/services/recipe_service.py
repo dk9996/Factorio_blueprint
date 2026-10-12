@@ -81,6 +81,27 @@ def _resolve_stack_icon(name: str, stack_type: str, items: dict, fluids: dict) -
     return _get_icon_filename(proto)
 
 
+def _resolve_fluid_color(name: str, fluids: dict) -> list[int] | None:
+    """
+    [r,g,b] 0-255 для подсказок жидкостных портов (см. io_hints_service.py).
+    Предпочитаем base_color (основной цвет жидкости в трубах/резервуарах),
+    flow_color — запасной вариант. Источник в данных — то [r,g,b] в
+    диапазоне 0..1 (как видно на water: base_color [0,0.34,0.6]), то уже
+    0..255 у некоторых модов — та же неоднозначность диапазона, что и у
+    tint в sprite_service._apply_tint, решается тем же способом.
+    """
+    proto = fluids.get(name)
+    if not proto:
+        return None
+    color = proto.get("base_color") or proto.get("flow_color")
+    if not isinstance(color, (list, tuple)) or len(color) < 3:
+        return None
+    r, g, b = color[0], color[1], color[2]
+    if max(r, g, b) <= 1:
+        r, g, b = r * 255, g * 255, b * 255
+    return [round(r), round(g), round(b)]
+
+
 def _is_hidden_stack(name: str, stack_type: str, items: dict, fluids: dict) -> bool:
     """
     Настоящий игровой признак "не показывать в обычных списках выбора" —
@@ -122,6 +143,12 @@ def build_recipe_catalog(raw: dict) -> dict:
                 "type": ing_type,
                 "icon": f"/assets/{ing_icon}" if ing_icon else None,
                 "hidden": _is_hidden_stack(ing_name, ing_type, items, fluids),
+                # fluidboxIndex/color — только для подсказок портов
+                # жидкости на канвасе (см. io_hints_service.py /
+                # frontend lib/ioHints.ts), у предметных ингредиентов
+                # всегда null.
+                "fluidboxIndex": ing.get("fluidbox_index") if ing_type == "fluid" else None,
+                "color": _resolve_fluid_color(ing_name, fluids) if ing_type == "fluid" else None,
             })
 
         results = []
@@ -135,6 +162,8 @@ def build_recipe_catalog(raw: dict) -> dict:
                 "type": res_type,
                 "icon": f"/assets/{res_icon}" if res_icon else None,
                 "hidden": _is_hidden_stack(res_name, res_type, items, fluids),
+                "fluidboxIndex": res.get("fluidbox_index") if res_type == "fluid" else None,
+                "color": _resolve_fluid_color(res_name, fluids) if res_type == "fluid" else None,
             })
 
         display_cat = resolver.resolve(name)

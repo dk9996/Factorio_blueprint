@@ -51,6 +51,21 @@ body{
 .select-tool-btn.active{
   background:var(--accent);border-color:var(--accent);color:#151515;font-weight:600;
 }
+.settings-panel-overlay{
+  position:fixed;inset:0;z-index:200;background:transparent;
+}
+.settings-panel{
+  position:absolute;top:50px;right:14px;
+  background:var(--bg-panel);border:1px solid var(--line);border-radius:4px;
+  padding:10px 0;min-width:220px;
+  box-shadow:0 4px 16px rgba(0,0,0,.4);
+  font-size:12px;
+}
+.settings-panel-title{
+  font-weight:600;color:var(--text-dim);font-size:11px;
+  text-transform:uppercase;letter-spacing:.5px;
+  padding:0 14px 6px;
+}
 
 /* ===== MAIN ROW ===== */
 .main{
@@ -143,6 +158,35 @@ body{
   image-rendering:pixelated;
   pointer-events:none;
 }
+/* ===== Режим "Реальные спрайты" ВЫКЛ — плейсхолдер-квадрат с иконкой ===== */
+.entity-simple{
+  background:var(--bg-panel);
+  border:1px solid var(--line);
+}
+.entity-simple-icon{
+  width:60%;height:60%;object-fit:contain;
+  pointer-events:none;
+  image-rendering:pixelated;
+}
+.entity-direction-arrow{
+  position:absolute;width:0;height:0;pointer-events:none;
+}
+.entity-direction-arrow.dir-0{ /* север/вверх */
+  top:3px;left:50%;transform:translateX(-50%);
+  border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:7px solid var(--accent);
+}
+.entity-direction-arrow.dir-90{ /* восток/вправо */
+  top:50%;right:3px;transform:translateY(-50%);
+  border-top:5px solid transparent;border-bottom:5px solid transparent;border-left:7px solid var(--accent);
+}
+.entity-direction-arrow.dir-180{ /* юг/вниз */
+  bottom:3px;left:50%;transform:translateX(-50%);
+  border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid var(--accent);
+}
+.entity-direction-arrow.dir-270{ /* запад/влево */
+  top:50%;left:3px;transform:translateY(-50%);
+  border-top:5px solid transparent;border-bottom:5px solid transparent;border-right:7px solid var(--accent);
+}
 .e-selected{outline:2px solid var(--blue);outline-offset:1px;}
 .e-bottleneck{outline:2px solid var(--bad);outline-offset:1px;}
 .e-bottleneck::after{
@@ -167,6 +211,29 @@ body{
 .stat-pop .row .ok{color:var(--ok);}
 .stat-pop .row .bad{color:var(--bad);}
 .stat-pop .arrow{
+  position:absolute;bottom:-6px;left:16px;width:10px;height:10px;
+  background:var(--bg-panel-raised);border-right:1px solid var(--line);border-bottom:1px solid var(--line);
+  transform:rotate(45deg);
+}
+
+/* ===== GROUP STATS PANEL (сети конвейеров/труб, см. lib/networks.ts) ===== */
+.group-stats-panel{
+  position:absolute;background:var(--bg-panel-raised);border:1px solid var(--line);
+  border-radius:5px;padding:8px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;
+  box-shadow:0 6px 18px rgba(0,0,0,.4);min-width:170px;z-index:20;
+}
+.group-stats-panel .gsp-head{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding-bottom:6px;margin-bottom:4px;border-bottom:1px solid var(--line-soft);
+  color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;font-size:10px;
+}
+.group-stats-panel .gsp-close{
+  background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:11px;padding:0;
+}
+.group-stats-panel .gsp-close:hover{color:var(--text);}
+.group-stats-panel .row{display:flex;justify-content:space-between;gap:12px;padding:2px 0;}
+.group-stats-panel .row span:first-child{color:var(--text-dim);}
+.group-stats-panel .arrow{
   position:absolute;bottom:-6px;left:16px;width:10px;height:10px;
   background:var(--bg-panel-raised);border-right:1px solid var(--line);border-bottom:1px solid var(--line);
   transform:rotate(45deg);
@@ -593,6 +660,22 @@ body{
 .entity-ghost.blocked img{
   opacity:0.35;
 }
+.entity-ghost.connects{
+  border:2px solid var(--ok);
+  background: rgba(95,184,90,0.16);
+}
+/* Подсказка дальности подземных конвейеров/труб (UndergroundRange.tsx) —
+   полоса "вырастает" из сущности наружу, а не появляется сразу целиком;
+   длительность задаётся инлайн-стилем (пропорционально дальности). */
+@keyframes underground-range-grow{
+  from{ clip-path: inset(0 100% 0 0); }
+  to{ clip-path: inset(0 0 0 0); }
+}
+.underground-range-grow{
+  animation-name: underground-range-grow;
+  animation-timing-function: ease-out;
+  animation-fill-mode: both;
+}
 /* ===== MARQUEE SELECTION (рамка выделения мышью) ===== */
 .marquee-box{
   position:absolute;
@@ -632,11 +715,36 @@ body{
 .ie-error{
   margin-top:8px;color:var(--bad);font-size:12px;
 }
+.ie-toolrow{
+  display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;
+}
+.ie-toolrow .ie-btn{padding:5px 10px;font-size:11px;}
+.ie-dropzone{
+  position:relative;
+}
+.ie-dropzone.drag-over .ie-textarea{
+  border-color:var(--accent);background:rgba(255,255,255,.03);
+}
+.ie-note{
+  margin-top:8px;color:var(--text-dim);font-size:11px;
+}
+.ie-summary{
+  margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:4px;
+  background:var(--bg-void);font-size:12px;
+}
+.ie-summary-title{font-weight:600;margin-bottom:4px;}
+.ie-summary-skip{
+  margin-top:6px;color:var(--bad);font-size:11px;word-break:break-word;
+}
+.ie-ghost-row{
+  display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--text-dim);
+}
 .ie-footer{
   border-top:1px solid var(--line-soft);
   padding:10px 14px;
-  display:flex;justify-content:flex-end;
+  display:flex;justify-content:flex-end;align-items:center;gap:10px;
 }
+.ie-footer.spread{justify-content:space-between;}
 .fl-status-msg{
   padding:16px 12px;text-align:center;
   font-size:12px;color:var(--text-dim);

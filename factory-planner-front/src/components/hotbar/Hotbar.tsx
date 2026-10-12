@@ -3,6 +3,7 @@ import { useHotbarStore, type HotbarItem } from '../../store/hotbarStore'
 import { useCanvasStore } from '../../store/canvasStore'
 import { useUiStore } from '../../store/uiStore'
 import { useTabsStore } from '../../store/tabsStore'
+import { useEntityCatalogStore } from '../../store/entityCatalogStore'
 import { buildPlacingGroupFromEntities } from '../../lib/clipboard/buildPlacingGroup'
 import { useState } from 'react'
 
@@ -17,6 +18,7 @@ export function Hotbar() {
   const openPicker = useUiStore((s) => s.openPicker)
   const deleteHoldProgress = useUiStore((s) => s.deleteHoldProgress)
   const openFactoryTab = useTabsStore((s) => s.openFactoryTab)
+  const catalogEntities = useEntityCatalogStore((s) => s.entities)
 
   const [expandedSlot, setExpandedSlot] = useState<0 | 1 | null>(null)
 
@@ -42,6 +44,10 @@ export function Hotbar() {
   function handleSlotClick(item: HotbarItem) {
     if (item.kind === 'entity') {
       const isSame = placing?.items.length === 1 && placing.items[0].typeId === item.typeId
+      // Свежий выбор из хотбара — включаем двухшаговую постановку
+      // подземных конвейеров/труб (см. src/lib/underground.ts).
+      const undergroundAutoCycle =
+        catalogEntities.find((e) => e.typeId === item.typeId)?.ioHints?.undergroundMaxDistance != null
       setPlacing(
         isSame
           ? null
@@ -58,6 +64,7 @@ export function Hotbar() {
                 craftingCategories: item.craftingCategories, // ← добавить
                 moduleSlots: item.moduleSlots,               // ← добавить
               }],
+              undergroundAutoCycle,
             },
       )
     } else {
