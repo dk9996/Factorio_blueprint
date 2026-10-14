@@ -110,6 +110,16 @@ def _extract_ports_from_box(
     for offset, conn in enumerate(connections):
         if not isinstance(conn, dict):
             continue
+        # Подземная сторона pipe-to-ground (connection_type="underground") —
+        # это не видимый патрубок, к которому можно подключить трубу, а
+        # внутренняя связь с парным pipe-to-ground (см. src/lib/underground.ts,
+        # _extract_underground_pipe_info ниже). Рисовать её как обычную
+        # нейтральную io-hint стрелку неверно — на сущности и так один
+        # видимый патрубок, а подземная сторона физически смотрит в
+        # противоположную сторону, создавая у игрока впечатление "двух
+        # портов, направленных друг против друга".
+        if conn.get("connection_type") == "underground":
+            continue
         direction = conn.get("direction", 0)
         if direction not in _DIRECTION_NAMES:
             continue

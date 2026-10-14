@@ -633,6 +633,12 @@ export function BlueprintCanvas() {
   const undergroundAnchorCatalogMax = undergroundAnchor
     ? (catalogByTypeId.get(undergroundAnchor.typeId)?.ioHints?.undergroundMaxDistance ?? null)
     : null
+  // Шевроны (стрелки направления) в подсказке имеют смысл только у
+  // конвейеров — у труб нет направления потока (жидкость течёт в обе
+  // стороны), поэтому для них рисуем просто серую полосу (см.
+  // UndergroundRange.tsx).
+  const undergroundAnchorIsBelt =
+    catalogByTypeId.get(undergroundAnchor?.typeId ?? '')?.ioHints?.kind === 'underground-belt'
   const undergroundAnchorDistance = (() => {
     if (!undergroundAnchor || undergroundAnchorCatalogMax == null || !ghostItemsWithPos[0]) return null
     const toGhostDistance = undergroundAxisDistanceToPoint(undergroundAnchor, ghostItemsWithPos[0], catalogByTypeId)
@@ -671,6 +677,8 @@ export function BlueprintCanvas() {
   const hoveredUndergroundMaxDistance = undergroundHoverPartner
     ? undergroundTileDistance(undergroundHoverAnchor!, undergroundHoverPartner)
     : null
+  const hoveredUndergroundIsBelt =
+    catalogByTypeId.get(undergroundHoverAnchor?.typeId ?? '')?.ioHints?.kind === 'underground-belt'
 
   // Призрак (вторая/выходная часть) стоит в зоне связи с якорем входа —
   // подсветка зелёной рамкой (см. PlacementGhost.tsx).
@@ -766,6 +774,7 @@ export function BlueprintCanvas() {
             y={undergroundAnchor.y}
             direction={undergroundAnchor.direction}
             maxDistance={undergroundAnchorDistance}
+            chevrons={undergroundAnchorIsBelt}
           />
         )}
         {!undergroundAnchor && undergroundHoverAnchor && hoveredUndergroundMaxDistance != null && (
@@ -776,6 +785,7 @@ export function BlueprintCanvas() {
             direction={hoveredUndergroundDirection}
             chevronDirection={hoveredUndergroundChevronDirection}
             maxDistance={hoveredUndergroundMaxDistance}
+            chevrons={hoveredUndergroundIsBelt}
           />
         )}
 
