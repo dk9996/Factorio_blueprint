@@ -11,18 +11,20 @@ interface RecipeCatalogStore {
   recipes: Recipe[]
   loading: boolean
   error: string | null
-  fetchRecipes: () => Promise<void>
+  activeProfile: string | null
+  fetchRecipes: (profile?: string) => Promise<void>
 }
 
 export const useRecipeCatalogStore = create<RecipeCatalogStore>((set) => ({
   recipes: [],
   loading: false,
   error: null,
+  activeProfile: null,
 
-  fetchRecipes: async () => {
+  fetchRecipes: async (profile = 'base') => {
     set({ loading: true, error: null })
     try {
-      const recipes = await recipesApi.list()
+      const recipes = await recipesApi.list(profile)
       const resolved = recipes.map((r) => ({
         ...r,
         icon: r.icon ? resolveAssetUrl(r.icon) : null,
@@ -30,7 +32,7 @@ export const useRecipeCatalogStore = create<RecipeCatalogStore>((set) => ({
         ingredients: r.ingredients.map(withResolvedStackIcon), // ← добавить
         results: r.results.map(withResolvedStackIcon),         // ← добавить
       }))
-      set({ recipes: resolved, loading: false })
+      set({ recipes: resolved, loading: false, activeProfile: profile })
     } catch (err) {
       set({
         loading: false,

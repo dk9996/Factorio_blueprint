@@ -12,6 +12,7 @@ fluidPipeOverlays) — считаются один раз при сборке en
 не нуждаются в пересчёте при каждом чтении кэша.
 """
 
+from app.content.icons import icon_url, proto_icon_key
 from app.services.recipe_service import _resolve_fluid_color
 
 _DIRECTION_NAMES = {0: "north", 4: "east", 8: "south", 12: "west"}
@@ -27,12 +28,7 @@ _SPLITTER_SECTIONS = {"splitter", "lane-splitter"}
 
 
 def _get_fluid_icon_filename(proto: dict | None) -> str | None:
-    if not proto:
-        return None
-    icon_path = proto.get("icon")
-    if not icon_path and proto.get("icons"):
-        icon_path = proto["icons"][0].get("icon")
-    return icon_path.rsplit("/", 1)[-1] if icon_path else None
+    return proto_icon_key(proto)
 
 
 def _resolve_fluid_display(name: str, fluids: dict, fluid_locale: dict) -> dict:
@@ -41,7 +37,7 @@ def _resolve_fluid_display(name: str, fluids: dict, fluid_locale: dict) -> dict:
     return {
         "name": name,
         "label": fluid_locale.get(name, name),
-        "icon": f"/assets/{icon_filename}" if icon_filename else None,
+        "icon": icon_url(icon_filename) if icon_filename else None,
         "color": _resolve_fluid_color(name, fluids),
     }
 

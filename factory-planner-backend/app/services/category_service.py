@@ -1,3 +1,5 @@
+from app.content.icons import proto_icon_key
+
 class CategoryResolver:
     """
     entity/item name -> item_like[name].subgroup -> item-subgroup[subgroup].group -> item-group[group]
@@ -60,9 +62,8 @@ class CategoryResolver:
             }
 
         icon_filename = None
-        icon_path = group.get("icon")
-        if icon_path:
-            icon_filename = icon_path.rsplit("/", 1)[-1]
+        # ключ иконки группы = мод + полный путь из её собственного прототипа
+        icon_filename = proto_icon_key(group)
 
         display_name = self.locale_map.get(group_name, group_name)
 

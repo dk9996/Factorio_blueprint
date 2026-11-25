@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.env
+data/
+.git/
+# content/ собирается локально шагом 1 из DEPLOY.md (build_content.py) и
+# монтируется в контейнер read-only томом (см. docker-compose.yml) — не
+# нужно копировать гигабайты спрайтов в сам образ.
+/content/

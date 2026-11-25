@@ -51,6 +51,22 @@ function getAxisInfo(
   return { maxDistance, isBelt, requiredPartnerDirection, tunnelDirection }
 }
 
+// Куда физически уходит тоннель от этой сущности — экспортировано для
+// UndergroundRange/BlueprintCanvas: полоса-подсказка во время постановки
+// (фаза выхода) должна тянуться именно туда, куда реально ведёт тоннель,
+// а не в сторону, куда "смотрит" сама сущность (entity.direction) — для
+// конвейеров это одно и то же, но для труб тоннель идёт в ПРОТИВОПОЛОЖНУЮ
+// сторону от видимого патрубка (см. AxisInfo.tunnelDirection выше). До
+// этой функции BlueprintCanvas передавал в UndergroundRange направление
+// самой сущности напрямую — полоса для труб визуально тянулась не туда.
+export function undergroundTunnelDirection(
+  typeId: string,
+  direction: EntityDirection | undefined,
+  catalogByTypeId: Map<string, CatalogEntity>,
+): CardinalDeg | null {
+  return getAxisInfo(typeId, direction, catalogByTypeId)?.tunnelDirection ?? null
+}
+
 // Строго ли point лежит со стороны тоннеля anchor'а (а не сзади) — во
 // время двухшаговой постановки роль входа уже ЗАФИКСИРОВАНА (не
 // определяется геометрией, как в findUndergroundPartner), поэтому выход

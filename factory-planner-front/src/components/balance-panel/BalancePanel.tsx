@@ -1,3 +1,4 @@
+import { ItemIcon } from '../common/ItemIcon'
 import { TargetGoal } from './TargetGoal'
 
 interface ResourceRow {
@@ -54,7 +55,7 @@ export function BalancePanel() {
         {mockResources.map((r) => (
           <div className="bp-row" key={r.name}>
             <div className={`bp-bar ${r.status}`} />
-            <img className="bp-icon" src={r.icon} alt={r.name} />
+            <ItemIcon className="bp-icon" src={r.icon} alt={r.name} />
             <div className="bp-name">
               {r.name}
               <span className="bp-req">{r.required}</span>

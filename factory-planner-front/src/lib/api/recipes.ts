@@ -28,8 +28,18 @@ export interface Recipe {
   subgroup: string
   subgroupOrder: string
   itemOrder: string
+  // Допустимые эффекты модулей (см. lib/modules.ts). Продуктивность по
+  // умолчанию запрещена, остальные — разрешены (значения уже разрешены
+  // бэкендом).
+  allowProductivity: boolean
+  allowSpeed: boolean
+  allowConsumption: boolean
+  allowPollution: boolean
+  allowQuality: boolean
+  allowedModuleCategories: string[] | null
 }
 
 export const recipesApi = {
-  list: () => api.get<Recipe[]>('/entities/recipes'),
+  // encodeURIComponent обязателен — см. комментарий в lib/api/entities.ts.
+  list: (profile = 'base') => api.get<Recipe[]>(`/entities/recipes?profile=${encodeURIComponent(profile)}`),
 }

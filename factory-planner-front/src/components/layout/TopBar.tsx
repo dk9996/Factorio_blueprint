@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { useFactoryStore } from '../../store/factoryStore'
 import { useUiStore } from '../../store/uiStore'
-import { placeTestEntitiesRow, placeAllCatalogEntitiesGrid, placePipeConnectionTestLayout, placeFluidOverlayTestLayout } from '../../lib/testLayout'
-import { TEST_ENTITY_TYPE_IDS } from '../../testEntities'
+import { useProjectsStore, friendlyError } from '../../store/projectsStore'
+import { returnToMenu } from '../../lib/projects/projectSession'
 import { SettingsPanel } from './SettingsPanel'
+import { ProjectNameField } from './ProjectNameField'
+import { SimButton } from '../circuit/SimPanel'
 
 export function TopBar() {
   const activeId = useFactoryStore((s) => s.activeId)
@@ -11,50 +13,40 @@ export function TopBar() {
   const active = factories.find((f) => f.id === activeId)
   const selectionToolActive = useUiStore((s) => s.selectionToolActive)
   const toggleSelectionTool = useUiStore((s) => s.toggleSelectionTool)
+  const activeProjectId = useUiStore((s) => s.activeProjectId)
+  const activeProject = useProjectsStore((s) => s.projects.find((p) => p.id === activeProjectId))
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [leaving, setLeaving] = useState(false)
+
+  async function handleBackToMenu() {
+    setLeaving(true)
+    try {
+      await returnToMenu()
+    } catch (err) {
+      alert(friendlyError(err))
+      setLeaving(false)
+    }
+  }
 
   return (
     <div className="topbar">
+      <button className="select-tool-btn" onClick={handleBackToMenu} disabled={leaving} title="Сохранить и вернуться к списку проектов">
+        {leaving ? '…' : '← В меню'}
+      </button>
       <div className="logo">⛭ FACTORY PLANNER</div>
+      {activeProjectId && <ProjectNameField projectId={activeProjectId} name={activeProject?.name ?? ''} />}
       <div className="breadcrumb">
         Заводы / <b>{active ? active.name : 'не выбрано'}</b>
       </div>
       <div className="spacer" />
       <button
-        className="select-tool-btn"
-        onClick={() => placeTestEntitiesRow(TEST_ENTITY_TYPE_IDS)}
-        title="Открыть новый чертёж и разложить в ряд сущности из src/testEntities.ts — для быстрой проверки спрайтов после пересборки"
-      >
-        🧪 Тест
-      </button>
-      <button
-        className="select-tool-btn"
-        onClick={() => placeAllCatalogEntitiesGrid()}
-        title="Открыть новый чертёж и разложить сеткой ВЕСЬ каталог сущностей — для полной визуальной ревизии спрайтов"
-      >
-        🧪 Все
-      </button>
-      <button
-        className="select-tool-btn"
-        onClick={() => placePipeConnectionTestLayout()}
-        title="Открыть новый чертёж и разложить трубы во всех 16 комбинациях подключения соседей — для проверки computePipeVariantKey"
-      >
-        🧪 Трубы
-      </button>
-      <button
-        className="select-tool-btn"
-        onClick={() => placeFluidOverlayTestLayout()}
-        title="Открыть новый чертёж и разложить сборочные машины с разными рецептами — для проверки fluidPipeOverlays (патрубок виден только у жидкостных рецептов)"
-      >
-        🧪 Жидкости
-      </button>
-      <button
         className={`select-tool-btn${selectionToolActive ? ' active' : ''}`}
         onClick={toggleSelectionTool}
-        title="Инструмент выделения: клик и рамка выделяют сущности. Перемещение, ПКМ-удержание-удаление и Shift-копирование/вставка рецепта работают вне зависимости от него."
+        title="Инструмент выделения: клик и рамка выделяют сущности; Ctrl+рамка (или Ctrl+клик по плитке) — только плитки, Delete удаляет выделенные плитки. Перемещение, ПКМ-удержание-удаление и Shift-копирование/вставка рецепта работают вне зависимости от него."
       >
         ⬚ Выделение
       </button>
+      <SimButton />
       <button
         className={`select-tool-btn${settingsOpen ? ' active' : ''}`}
         onClick={() => setSettingsOpen((v) => !v)}

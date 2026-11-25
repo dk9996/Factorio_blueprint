@@ -109,3 +109,21 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+/* редактор: никакого выделения текста и перетаскивания картинок */
+html, body, #root {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+img, svg, canvas {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+
+/* исключения: где выделение и ввод нужны */
+input, textarea, select, [contenteditable="true"], .selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}

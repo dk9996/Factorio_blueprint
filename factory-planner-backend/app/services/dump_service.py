@@ -1,7 +1,15 @@
 import json
-import subprocess
 from pathlib import Path
-from app.config import settings
+from app.content.paths import (
+    entity_sprite_frames_path,
+    entity_sprites_dir,
+    fluid_overlay_frames_path,
+    pipe_sprite_frames_path,
+    directional_sprite_frames_path,
+    profile_cache_dir,
+    tile_sprite_map_path,
+)
+from app.content.icons import icon_key, icon_url, proto_icon_key
 from app.services.locale_service import get_item_group_locale
 from app.services.entity_sprite_service import (
     build_entity_sprite_map,
@@ -9,15 +17,10 @@ from app.services.entity_sprite_service import (
     build_fluid_overlay_map,
     build_directional_sprite_map,
 )
-from app.services.locale_service import get_item_group_locale, get_entity_name_locale, get_fluid_name_locale
-from app.services.recipe_service import build_recipe_catalog
+from app.services.locale_service import get_item_group_locale, get_entity_name_locale, get_fluid_name_locale, get_quality_name_locale, get_tile_name_locale, get_virtual_signal_name_locale, get_speaker_locale
+from app.services.recipe_service import build_recipe_catalog, _build_item_lookup
 from app.services.category_service import CategoryResolver
 from app.services.io_hints_service import build_io_hints
-
-DUMP_CACHE_PATH = Path("data/cache/data-raw-dump.json")
-CATALOG_CACHE_PATH = Path("data/cache/entity_catalog.json")
-ICON_SIZES_CACHE_PATH = Path("data/cache/icon_sizes.json")
-ENTITY_SPRITES_DIR = Path("data/cache/entity_sprites")
 
 NON_ENTITY_SECTIONS = {
     "font", "gui-style", "utility-constants", "utility-sounds", "sprite",
@@ -65,42 +68,508 @@ def _looks_like_bulk_inserter(name: str, proto: dict) -> bool:
     return any(hint in lowered for hint in _BULK_INSERTER_NAME_HINTS)
 
 
-def run_game_dump() -> Path:
-    exe_path = settings.factorio_executable
-    if not exe_path.exists():
-        raise FileNotFoundError(f"Factorio не найден: {exe_path}")
-
-    result = subprocess.run(
-        [
-            str(exe_path),
-            "--dump-data",
-            "--mod-directory", str(settings.factorio_mods_path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Factorio завершился с ошибкой:\n{result.stderr}")
-
-    generated_path = settings.factorio_appdata_path / "script-output" / "data-raw-dump.json"
-    if not generated_path.exists():
-        raise FileNotFoundError(f"Дамп не найден по ожидаемому пути: {generated_path}")
-
-    DUMP_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DUMP_CACHE_PATH.write_bytes(generated_path.read_bytes())
-
-    return DUMP_CACHE_PATH
-
-
 def _extract_icon_filename(prototype: dict) -> str | None:
-    icon_path = prototype.get("icon")
-    if not icon_path and "icons" in prototype and prototype["icons"]:
-        icon_path = prototype["icons"][0].get("icon")
-    if not icon_path:
+    # Ключ иконки = мод + полный путь из дампа (см. app/content/icons.py),
+    # а не basename. Для icons[] — первый слой (как и раньше).
+    return proto_icon_key(prototype)
+
+
+ALL_MODULE_EFFECTS = ["speed", "productivity", "consumption", "pollution", "quality"]
+
+
+def _module_slots(proto: dict) -> int:
+    # 2.0: module_slots на самом прототипе; 1.1: module_specification.module_slots
+    slots = proto.get("module_slots")
+    if slots is None:
+        spec = proto.get("module_specification")
+        if isinstance(spec, dict):
+            slots = spec.get("module_slots")
+    return int(slots or 0)
+
+
+def _allowed_effects(proto: dict) -> list[str]:
+    # allowed_effects — строка или список; не задан => разрешены все эффекты
+    # (так в игре: отсутствие поля = без ограничений).
+    value = proto.get("allowed_effects")
+    if value is None:
+        return list(ALL_MODULE_EFFECTS)
+    if isinstance(value, str):
+        return [value]
+    return [str(v) for v in value]
+
+
+def _allowed_module_categories(proto: dict) -> list[str] | None:
+    # Есть только в 2.0; не задано => ограничений по категориям нет (None).
+    value = proto.get("allowed_module_categories")
+    if value is None:
         return None
-    return icon_path.rsplit("/", 1)[-1]
+    if isinstance(value, str):
+        return [value]
+    return [str(v) for v in value]
+
+
+_MODULE_CATEGORY_ORDER = {"speed": 0, "productivity": 1, "efficiency": 2, "quality": 3}
+
+
+def build_module_catalog(raw: dict, entity_name_map: dict[str, str]) -> list[dict]:
+    """
+    Модули профиля (raw["module"]) для выбора в слотах сущностей. Поля как в
+    дампе: category, tier, effect ({speed|productivity|consumption|
+    pollution|quality: число}); limitation/limitation_blacklist — только в
+    формате 1.1 (список рецептов), в 2.0 их нет и ограничения идут через
+    флаги рецепта allow_*.
+    """
+    modules: list[dict] = []
+    for name, proto in raw.get("module", {}).items():
+        if not isinstance(proto, dict):
+            continue
+        icon = proto_icon_key(proto)
+        entry = {
+            "name": name,
+            "label": entity_name_map.get(name, name),
+            "category": proto.get("category", ""),
+            "tier": proto.get("tier", 0),
+            "effect": {k: v for k, v in (proto.get("effect") or {}).items() if isinstance(v, (int, float))},
+            "icon": icon_url(icon) if icon else None,
+        }
+        if proto.get("limitation"):
+            entry["limitation"] = list(proto["limitation"])
+        if proto.get("limitation_blacklist"):
+            entry["limitationBlacklist"] = list(proto["limitation_blacklist"])
+        modules.append(entry)
+    modules.sort(key=lambda m: (_MODULE_CATEGORY_ORDER.get(m["category"], 99), m["tier"], m["name"]))
+    return modules
+
+
+def _quality_color_hex(color) -> str:
+    """Цвет прототипа quality: список [r,g,b] или {r,g,b} (в дампе 0..255,
+    у служебных — доли 0..1) -> '#rrggbb'."""
+    if isinstance(color, dict):
+        parts = [color.get("r", 0), color.get("g", 0), color.get("b", 0)]
+    else:
+        parts = list(color or [0, 0, 0])[:3]
+    scale = 255 if max(parts) <= 1 else 1
+    r, g, b = (max(0, min(255, round(c * scale))) for c in parts)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def build_quality_catalog(raw: dict) -> list[dict]:
+    """
+    Качества профиля в порядке level (normal, uncommon, rare, epic,
+    legendary). Скрытые (quality-unknown) не включаются. Если в профиле нет
+    ни одного качества выше normal (base, elevated-rails) — список ПУСТОЙ:
+    по нему фронт включает функцию качества.
+    """
+    names = get_quality_name_locale()
+    qualities: list[dict] = []
+    for name, proto in raw.get("quality", {}).items():
+        if not isinstance(proto, dict) or proto.get("hidden"):
+            continue
+        icon = proto_icon_key(proto)
+        qualities.append({
+            "name": name,
+            "level": proto.get("level", 0),
+            "color": _quality_color_hex(proto.get("color")),
+            "localizedName": names.get(name, name),
+            "icon": icon_url(icon) if icon else None,
+        })
+    qualities.sort(key=lambda q: q["level"])
+    return qualities if len(qualities) > 1 else []
+
+
+def get_cached_qualities(profile_dir: Path) -> list[dict]:
+    path = profile_dir / "qualities.json"
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+# --- Схемная сеть (провода) -------------------------------------------------
+# Точки подключения проводов в дампе 2.0 — в тайлах от центра сущности, для
+# направлений N,E,S,W (индексы 0..3 -> direction 0|4|8|12 Factorio):
+#   комбинаторы: input_connection_points[dir] / output_connection_points[dir],
+#   constant-combinator: circuit_wire_connection_points[dir],
+#   остальные: circuit_connector (один dict на все направления, либо список
+#   по направлениям; у конвейеров список по формам — берём первый),
+#   power-switch: circuit_wire_connection_point, электростолбы:
+#   connection_points[вариант] (с copper-точкой).
+# Каждая точка — {"wire": {"red": [x,y], "green": [x,y]}, "shadow": ...}.
+_DIRECTION_KEYS = ("0", "4", "8", "12")
+
+
+def _wire_pair(point: dict | None) -> dict | None:
+    wire = (point or {}).get("wire") or {}
+    if "red" in wire and "green" in wire:
+        return {"red": list(wire["red"]), "green": list(wire["green"])}
+    return None
+
+
+def _pick_direction(value, index: int):
+    """list -> элемент по направлению (первый, если список другой длины,
+    например форм конвейера), dict -> он же для всех направлений."""
+    if isinstance(value, list):
+        if not value:
+            return None
+        return value[index] if len(value) == 4 else value[0]
+    return value
+
+
+def build_circuit_connectors(proto: dict) -> dict | None:
+    """connectors: {"0"|"4"|"8"|"12": [{id, kind, red:[x,y], green:[x,y]}]} или
+    None, если сущность не участвует в схемной сети."""
+    result: dict[str, list[dict]] = {}
+    for i, key in enumerate(_DIRECTION_KEYS):
+        entries: list[dict] = []
+        inp = _pick_direction(proto.get("input_connection_points"), i)
+        out = _pick_direction(proto.get("output_connection_points"), i)
+        if proto.get("input_connection_points") is not None and proto.get("output_connection_points") is not None:
+            for cid, point in (("input", inp), ("output", out)):
+                pair = _wire_pair(point)
+                if pair:
+                    entries.append({"id": cid, "kind": cid, **pair})
+        elif proto.get("circuit_wire_connection_points") is not None:
+            pair = _wire_pair(_pick_direction(proto["circuit_wire_connection_points"], i))
+            if pair:
+                entries.append({"id": "single", "kind": "single", **pair})
+        elif proto.get("connection_points") is not None and proto.get("type") == "electric-pole":
+            variant = _pick_direction(proto["connection_points"], 0)
+            wire = (variant or {}).get("wire") or {}
+            if "red" in wire and "green" in wire:
+                # Точки столба заданы с высотой подвеса (≈ -2.5 тайла вверх,
+                # провода висят над столбом) — для вида сверху сдвигаем так,
+                # чтобы медная точка была в центре: красный/зелёный остаются
+                # по бокам от неё.
+                cx, cy = wire.get("copper", [0, 0])
+                entries.append({
+                    "id": "single", "kind": "single",
+                    "red": [wire["red"][0] - cx, wire["red"][1] - cy],
+                    "green": [wire["green"][0] - cx, wire["green"][1] - cy],
+                })
+        elif proto.get("circuit_wire_connection_point") is not None:
+            pair = _wire_pair(proto["circuit_wire_connection_point"])
+            if pair:
+                entries.append({"id": "single", "kind": "single", **pair})
+        elif proto.get("circuit_connector") is not None:
+            pair = _wire_pair((_pick_direction(proto["circuit_connector"], i) or {}).get("points"))
+            if pair:
+                entries.append({"id": "single", "kind": "single", **pair})
+        if not entries:
+            return None
+        result[key] = entries
+    return result
+
+
+def circuit_wire_max_distance(proto: dict) -> float | None:
+    for key in ("circuit_wire_max_distance", "maximum_wire_distance", "wire_max_distance"):
+        if proto.get(key):
+            return float(proto[key])
+    return None
+
+
+def _recipe_results(recipe: dict) -> list[dict]:
+    res = recipe.get("results")
+    if isinstance(res, list):
+        return [r for r in res if isinstance(r, dict)]
+    if recipe.get("result"):
+        return [{"type": "item", "name": recipe["result"], "amount": recipe.get("result_count", 1)}]
+    return []
+
+
+def _recipe_ingredients(recipe: dict) -> list[dict]:
+    out = []
+    for ing in recipe.get("ingredients", []) or []:
+        if isinstance(ing, dict):
+            out.append(ing)
+        elif isinstance(ing, list) and len(ing) >= 2:
+            out.append({"type": "item", "name": ing[0], "amount": ing[1]})
+    return out
+
+
+def _expected_amount(r: dict) -> float:
+    amount = r.get("amount")
+    if amount is None:
+        amount = (float(r.get("amount_min", 0)) + float(r.get("amount_max", 0))) / 2
+    return float(amount) * float(r.get("probability", 1))
+
+
+def compute_item_weights(raw: dict, items: dict[str, dict]) -> dict[str, float]:
+    """
+    Вес предметов по правилам игры (lua-api auxiliary/item-weight): явный
+    `weight`, иначе по первому рецепту (вес ингредиентов / число продуктов *
+    ingredient_to_weight_coefficient, с поправкой на целое число стаков в
+    ракете), иначе default_item_weight. Петли рецептов -> default.
+    """
+    utility = (raw.get("utility-constants") or {}).get("default") or {}
+    lift = float(utility.get("rocket_lift_weight", 1_000_000))
+    default_weight = float(utility.get("default_item_weight", 100))
+
+    recipes_by_product: dict[str, list[dict]] = {}
+    for rname, recipe in raw.get("recipe", {}).items():
+        if not isinstance(recipe, dict) or recipe.get("hidden") or recipe.get("allow_decomposition") is False:
+            continue
+        recipe = {**recipe, "name": rname}
+        for r in _recipe_results(recipe):
+            if r.get("type", "item") == "item":
+                recipes_by_product.setdefault(r["name"], []).append(recipe)
+
+    def recipe_rank(item_name: str, recipe: dict):
+        uses_item = any(i.get("name") == item_name for i in _recipe_ingredients(recipe))
+        return (
+            recipe["name"] != item_name,
+            uses_item,
+            str(recipe.get("category", "crafting")),
+            str(recipe.get("subgroup", "")),
+            str(recipe.get("order", "")),
+            recipe["name"],
+        )
+
+    cache: dict[str, float] = {}
+    in_progress: set[str] = set()
+
+    def weight_of(name: str) -> float:
+        if name in cache:
+            return cache[name]
+        proto = items.get(name)
+        if proto is None:
+            return default_weight
+        if proto.get("weight") is not None:
+            cache[name] = float(proto["weight"])
+            return cache[name]
+        flags = proto.get("flags") or []
+        if "only-in-cursor" in flags and "spawnable" in flags:
+            cache[name] = 0.0
+            return 0.0
+        if name in in_progress:
+            return default_weight
+        candidates = recipes_by_product.get(name)
+        if not candidates:
+            cache[name] = default_weight
+            return default_weight
+        in_progress.add(name)
+        try:
+            recipe = sorted(candidates, key=lambda r: recipe_rank(name, r))[0]
+            recipe_weight = 0.0
+            for ing in _recipe_ingredients(recipe):
+                if ing.get("type", "item") == "fluid":
+                    recipe_weight += float(ing.get("amount", 0)) * 100
+                else:
+                    recipe_weight += weight_of(ing["name"]) * float(ing.get("amount", 0))
+            product_count = sum(_expected_amount(r) for r in _recipe_results(recipe) if r.get("type", "item") == "item")
+            if recipe_weight == 0 or product_count == 0:
+                result = default_weight
+            else:
+                coeff = float(proto.get("ingredient_to_weight_coefficient", 0.5))
+                stack = max(1, int(proto.get("stack_size", 1)))
+                intermediate = recipe_weight / product_count * coeff
+                simple = lift / stack
+                if not recipe.get("allow_productivity", False) and simple >= intermediate:
+                    result = simple
+                else:
+                    stacks = lift / intermediate / stack if intermediate > 0 else 0
+                    result = intermediate if stacks <= 1 else lift / int(stacks) / stack
+        finally:
+            in_progress.discard(name)
+        cache[name] = result
+        return result
+
+    return {name: weight_of(name) for name in items}
+
+
+def build_speaker_instruments(proto: dict) -> list[dict] | None:
+    """Инструменты и звуки программируемой колонки (порядок = id в
+    circuit_parameters.instrument_id / note_id) с локализацией; у остальных
+    сущностей None."""
+    instruments = proto.get("instruments")
+    if proto.get("type") != "programmable-speaker" or not isinstance(instruments, list):
+        return None
+    instr_names, note_names = get_speaker_locale()
+    out = []
+    for ins in instruments:
+        notes = [
+            {"name": n.get("name"), "label": note_names.get(n.get("name"), n.get("name"))}
+            for n in ins.get("notes", [])
+            if isinstance(n, dict)
+        ]
+        out.append({"name": ins.get("name"), "label": instr_names.get(ins.get("name"), ins.get("name")), "notes": notes})
+    return out
+
+
+def build_signal_catalog(raw: dict, entity_name_map: dict[str, str]) -> dict:
+    """Сигналы для окна выбора (как в игре): виртуальные сигналы, предметы и
+    жидкости (не скрытые) с группой/подгруппой и порядком. Иконки — по полному
+    ключу (app/content/icons.py)."""
+    virtual_names = get_virtual_signal_name_locale()
+    fluid_names = get_fluid_name_locale()
+    group_names = get_item_group_locale()
+    subgroups = raw.get("item-subgroup", {})
+    groups = raw.get("item-group", {})
+
+    def place(proto: dict, default_subgroup: str) -> tuple[str, str, str, str]:
+        sg = proto.get("subgroup") or default_subgroup
+        sg_proto = subgroups.get(sg) or {}
+        group = sg_proto.get("group") or "other"
+        return group, sg, str(sg_proto.get("order", "")), str(proto.get("order", ""))
+
+    signals: list[dict] = []
+    seen_groups: set[str] = set()
+    item_lookup = _build_item_lookup(raw)
+    weights = compute_item_weights(raw, item_lookup)
+    lift = float(((raw.get("utility-constants") or {}).get("default") or {}).get("rocket_lift_weight", 1_000_000))
+
+    def add(stype: str, name: str, proto: dict, label: str, default_subgroup: str):
+        if proto.get("hidden"):
+            return
+        icon = proto_icon_key(proto)
+        group, sg, sg_order, order = place(proto, default_subgroup)
+        seen_groups.add(group)
+        entry = {
+            "type": stype, "name": name, "label": label,
+            "icon": icon_url(icon) if icon else None,
+            "group": group, "subgroup": sg, "subgroupOrder": sg_order, "order": order,
+        }
+        if stype == "item":
+            entry["stackSize"] = int(proto.get("stack_size", 1))
+            w = weights.get(name, 0)
+            # вместимость ракеты: предметы тяжелее подъёмного веса и нулевого веса не грузятся
+            if 0 < w <= lift:
+                entry["rocketCapacity"] = int(lift // w)
+        signals.append(entry)
+
+    for name, proto in raw.get("virtual-signal", {}).items():
+        add("virtual", name, proto, virtual_names.get(name, name), "virtual-signal")
+    for name, proto in raw.get("fluid", {}).items():
+        add("fluid", name, proto, fluid_names.get(name, name), "fluid")
+    for name, proto in item_lookup.items():
+        add("item", name, proto, entity_name_map.get(name, name), "other")
+
+    group_list = []
+    for gname in seen_groups:
+        gp = groups.get(gname) or {}
+        icon = proto_icon_key(gp)
+        group_list.append({
+            "name": gname,
+            "label": group_names.get(gname, gname),
+            "order": str(gp.get("order", "zzz")),
+            "icon": icon_url(icon) if icon else None,
+        })
+    group_list.sort(key=lambda g: g["order"])
+    signals.sort(key=lambda s: (s["group"], s["subgroupOrder"], s["subgroup"], s["order"], s["name"]))
+    return {"groups": group_list, "signals": signals}
+
+
+def get_cached_signals(profile_dir: Path) -> dict:
+    path = profile_dir / "signals.json"
+    if not path.exists():
+        return {"groups": [], "signals": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+TILE_CATEGORY_NAME = "Плитки"
+
+
+def _color_hex_any(color) -> str:
+    return _quality_color_hex(color)
+
+
+def placeable_tile_names(raw: dict) -> dict[str, str]:
+    """
+    tile name -> имя предмета, которым плитка кладётся. Плитка кладётся, если
+    ЕСТЬ предмет с place_as_tile.result == плитка (так в 2.0: stone-brick ->
+    stone-path, concrete, landfill, ...) ИЛИ у самой плитки задан placeable_by
+    (парные hazard-*-right и т.п., которые кладутся тем же предметом, что и
+    -left). Автоподмены по поверхности (frozen-* на Акилоне: у них задан
+    thawed_variant) в палитру не попадают — это не отдельный выбор игрока.
+    """
+    by_item: dict[str, str] = {}
+    for section in raw.values():
+        if not isinstance(section, dict):
+            continue
+        for item_name, proto in section.items():
+            if isinstance(proto, dict) and isinstance(proto.get("place_as_tile"), dict):
+                result = proto["place_as_tile"].get("result")
+                if result:
+                    by_item.setdefault(result, item_name)
+    placeable: dict[str, str] = {}
+    for name, tile in raw.get("tile", {}).items():
+        if not isinstance(tile, dict) or tile.get("thawed_variant") or tile.get("hidden"):
+            continue
+        pb = tile.get("placeable_by")
+        if isinstance(pb, list):
+            pb = pb[0] if pb else None
+        item = (pb.get("item") if isinstance(pb, dict) else None) or by_item.get(name)
+        if item:
+            placeable[name] = item
+    return placeable
+
+
+def _find_item_proto(raw: dict, item_name: str) -> dict | None:
+    for section in raw.values():
+        if isinstance(section, dict) and isinstance(section.get(item_name), dict) and section[item_name].get("stack_size") is not None:
+            return section[item_name]
+    return None
+
+
+def build_tile_catalog(raw: dict, entity_name_map: dict[str, str]) -> list[dict]:
+    """Плитки, которые игрок может положить (см. placeable_tile_names), в
+    порядке order прототипа: {name, localizedName, icon (иконка предмета),
+    item, mapColor, category}. Текстуры (textureVariants) добавляются при
+    чтении из tile_sprites.json (см. get_cached_tiles)."""
+    names = get_tile_name_locale()
+    tiles: list[dict] = []
+    for name, item in placeable_tile_names(raw).items():
+        tile = raw["tile"][name]
+        item_proto = _find_item_proto(raw, item)
+        icon = proto_icon_key(item_proto) if item_proto else None
+        tiles.append({
+            "name": name,
+            "localizedName": names.get(name) or entity_name_map.get(item, name),
+            "icon": icon_url(icon) if icon else None,
+            "item": item,
+            "mapColor": _color_hex_any(tile.get("map_color")),
+            "category": TILE_CATEGORY_NAME,
+            "_order": str(tile.get("order", "")),
+        })
+    tiles.sort(key=lambda t: (t["_order"], t["name"]))
+    for t in tiles:
+        del t["_order"]
+    return tiles
+
+
+def get_cached_tiles(profile_dir: Path) -> list[dict]:
+    path = profile_dir / "tiles.json"
+    if not path.exists():
+        return []
+    tiles = json.loads(path.read_text(encoding="utf-8"))
+    sprites: dict = {}
+    map_path = tile_sprite_map_path()
+    if map_path.exists():
+        try:
+            sprites = json.loads(map_path.read_text(encoding="utf-8"))
+        except Exception:
+            sprites = {}
+    for t in tiles:
+        info = sprites.get(t["name"])
+        # textureVariants: None => фронт рисует однотонной заливкой mapColor
+        t["textureVariants"] = (
+            {
+                "mode": info["mode"],
+                "cols": info["cols"],
+                "rows": info["rows"],
+                "urls": [f"/tile-assets/{t['name']}/{i}.png" for i in range(info["count"])],
+            }
+            if info
+            else None
+        )
+    return tiles
+
+
+def get_cached_modules(profile_dir: Path) -> list[dict]:
+    path = profile_dir / "modules.json"
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _box_to_size(box) -> tuple[int, int] | None:
@@ -161,8 +630,9 @@ def build_icon_size_map(raw: dict) -> dict[str, int]:
 
             icon_path = proto.get("icon")
             if icon_path and top_icon_size:
-                filename = icon_path.rsplit("/", 1)[-1]
-                sizes.setdefault(filename, top_icon_size)
+                filename = icon_key(icon_path)
+                if filename:
+                    sizes.setdefault(filename, top_icon_size)
 
             icons_layers = proto.get("icons")
             if icons_layers:
@@ -172,19 +642,19 @@ def build_icon_size_map(raw: dict) -> dict[str, int]:
                     layer_path = layer.get("icon")
                     layer_size = layer.get("icon_size", top_icon_size)
                     if layer_path and layer_size:
-                        filename = layer_path.rsplit("/", 1)[-1]
-                        sizes.setdefault(filename, layer_size)
+                        filename = icon_key(layer_path)
+                        if filename:
+                            sizes.setdefault(filename, layer_size)
 
     return sizes
 
 
-def get_icon_size_map() -> dict[str, int]:
-    if not ICON_SIZES_CACHE_PATH.exists():
+def get_icon_size_map(profile_dir: Path) -> dict[str, int]:
+    icon_sizes_path = profile_dir / "icon_sizes.json"
+    if not icon_sizes_path.exists():
         return {}
-    with open(ICON_SIZES_CACHE_PATH, encoding="utf-8") as f:
+    with open(icon_sizes_path, encoding="utf-8") as f:
         return json.load(f)
-
-PIPE_SPRITE_FRAMES_PATH = ENTITY_SPRITES_DIR.parent / "entity_pipe_sprite_frames.json"
 
 
 def _load_pipe_sprite_frame_state() -> tuple[dict, set[str]]:
@@ -193,17 +663,18 @@ def _load_pipe_sprite_frame_state() -> tuple[dict, set[str]]:
     множество реально существующих на диске PNG-файлов вариантов труб
     (имена вида "{entity_name}__pipe_{variant_key}") — та же логика, что
     у entity_sprite_frames.json/existing_sprite_files чуть выше, только
-    для вариантов подключения труб (см. crop_pipe_variant_sprites).
+    для вариантов подключения труб (см. crop_pipe_variant_sprites). Общее
+    хранилище (не по-профильное), см. app/content/paths.py.
     """
+    frames_path = pipe_sprite_frames_path()
     frames: dict = {}
-    if PIPE_SPRITE_FRAMES_PATH.exists():
+    if frames_path.exists():
         try:
-            frames = json.loads(PIPE_SPRITE_FRAMES_PATH.read_text(encoding="utf-8"))
+            frames = json.loads(frames_path.read_text(encoding="utf-8"))
         except Exception:
             frames = {}
-    existing_files = (
-        {p.stem for p in ENTITY_SPRITES_DIR.glob("*__pipe_*.png")} if ENTITY_SPRITES_DIR.exists() else set()
-    )
+    sprites_dir = entity_sprites_dir()
+    existing_files = {p.stem for p in sprites_dir.glob("*__pipe_*.png")} if sprites_dir.exists() else set()
     return frames, existing_files
 
 
@@ -231,21 +702,18 @@ def _build_pipe_variants_field(
     return variants or None
 
 
-FLUID_OVERLAY_FRAMES_PATH = ENTITY_SPRITES_DIR.parent / "entity_fluid_overlay_frames.json"
-
-
 def _load_fluid_overlay_frame_state() -> tuple[dict, set[str]]:
     """Аналог _load_pipe_sprite_frame_state, но для патрубков жидкостных
     fluid_boxes сборочных машин (см. crop_fluid_overlay_sprites)."""
+    frames_path = fluid_overlay_frames_path()
     frames: dict = {}
-    if FLUID_OVERLAY_FRAMES_PATH.exists():
+    if frames_path.exists():
         try:
-            frames = json.loads(FLUID_OVERLAY_FRAMES_PATH.read_text(encoding="utf-8"))
+            frames = json.loads(frames_path.read_text(encoding="utf-8"))
         except Exception:
             frames = {}
-    existing_files = (
-        {p.stem for p in ENTITY_SPRITES_DIR.glob("*__fluid_*.png")} if ENTITY_SPRITES_DIR.exists() else set()
-    )
+    sprites_dir = entity_sprites_dir()
+    existing_files = {p.stem for p in sprites_dir.glob("*__fluid_*.png")} if sprites_dir.exists() else set()
     return frames, existing_files
 
 
@@ -277,22 +745,21 @@ def _build_fluid_overlays_field(
     return overlays or None
 
 
-DIRECTIONAL_SPRITE_FRAMES_PATH = ENTITY_SPRITES_DIR.parent / "entity_directional_sprite_frames.json"
 _DIRECTION_NAMES = ("north", "east", "south", "west")
 
 
 def _load_directional_sprite_frame_state() -> tuple[dict, set[str]]:
     """Аналог _load_pipe_sprite_frame_state/_load_fluid_overlay_frame_state,
     но для механики поворота (R) сущностей (см. crop_directional_sprites)."""
+    frames_path = directional_sprite_frames_path()
     frames: dict = {}
-    if DIRECTIONAL_SPRITE_FRAMES_PATH.exists():
+    if frames_path.exists():
         try:
-            frames = json.loads(DIRECTIONAL_SPRITE_FRAMES_PATH.read_text(encoding="utf-8"))
+            frames = json.loads(frames_path.read_text(encoding="utf-8"))
         except Exception:
             frames = {}
-    existing_files = (
-        {p.stem for p in ENTITY_SPRITES_DIR.glob("*__dir_*.png")} if ENTITY_SPRITES_DIR.exists() else set()
-    )
+    sprites_dir = entity_sprites_dir()
+    existing_files = {p.stem for p in sprites_dir.glob("*__dir_*.png")} if sprites_dir.exists() else set()
     return frames, existing_files
 
 
@@ -326,11 +793,21 @@ def _build_directional_sprites_field(
     return result
 
 
-def build_entity_catalog(force_redump: bool = False) -> dict:
-    if force_redump or not DUMP_CACHE_PATH.exists():
-        run_game_dump()
+def build_entity_catalog(profile_dir: Path) -> dict:
+    """
+    Строит каталог для УЖЕ ДОСТУПНОГО дампа конкретного профиля
+    (profile_dir/data-raw-dump.json). Сам дамп сюда не запускает — это
+    ответственность app/services/profile_build_service.run_profile_dump
+    (решение: "какие моды дампить" — забота профиля, "как превратить дамп
+    в каталог" — чистая функция от файла дампа + папки вывода).
+    """
+    dump_path = profile_dir / "data-raw-dump.json"
+    if not dump_path.exists():
+        raise FileNotFoundError(
+            f"Дамп не найден: {dump_path} (вызовите profile_build_service.run_profile_dump сначала)"
+        )
 
-    with open(DUMP_CACHE_PATH, encoding="utf-8") as f:
+    with open(dump_path, encoding="utf-8") as f:
         raw = json.load(f)
 
     locale_map = get_item_group_locale()
@@ -340,8 +817,9 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
     resolver = CategoryResolver(raw, locale_map)
 
     icon_sizes = build_icon_size_map(raw)
-    ICON_SIZES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(ICON_SIZES_CACHE_PATH, "w", encoding="utf-8") as f:
+    icon_sizes_path = profile_dir / "icon_sizes.json"
+    icon_sizes_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(icon_sizes_path, "w", encoding="utf-8") as f:
         json.dump(icon_sizes, f)
 
     catalog: list[dict] = []
@@ -349,12 +827,13 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
     scanned_sections = 0
     entity_type_counts: dict[str, int] = {}
 
+    sprites_dir = entity_sprites_dir()
     existing_sprite_files = set()
-    if ENTITY_SPRITES_DIR.exists():
-        existing_sprite_files = {p.stem for p in ENTITY_SPRITES_DIR.glob("*.png")}
+    if sprites_dir.exists():
+        existing_sprite_files = {p.stem for p in sprites_dir.glob("*.png")}
 
     entity_sprite_frames: dict = {}
-    frames_meta_path = ENTITY_SPRITES_DIR.parent / "entity_sprite_frames.json"
+    frames_meta_path = entity_sprite_frames_path()
     if frames_meta_path.exists():
         try:
             entity_sprite_frames = json.loads(frames_meta_path.read_text(encoding="utf-8"))
@@ -392,7 +871,7 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
             cat = resolver.resolve(name)
 
             category_icon = (
-                f"/assets/{cat['icon_filename']}" if cat["icon_filename"] else f"/assets/{icon_filename}"
+                icon_url(cat["icon_filename"]) if cat["icon_filename"] else icon_url(icon_filename)
             )
 
             has_sprite = name in existing_sprite_files
@@ -402,7 +881,7 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "typeId": name,
                 "type": section_name,
                 "label": entity_name_map.get(name, name),
-                "icon": f"/assets/{icon_filename}",
+                "icon": icon_url(icon_filename),
                 "entitySprite": f"/entity-assets/{name}.png" if has_sprite else None,
                 "spriteFrameWidth": frame_info["frameWidth"] if frame_info else None,
                 "spriteFrameHeight": frame_info["frameHeight"] if frame_info else None,
@@ -423,7 +902,15 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "width": width * 32,
                 "height": height * 32,
                 "craftingCategories": proto.get("crafting_categories"),
-                "moduleSlots": proto.get("module_slots", 0),
+                "moduleSlots": _module_slots(proto),
+                # Допустимость модулей в сущности (см. front lib/modules.ts):
+                # эффекты — всегда массив, категории — массив или null.
+                "allowedEffects": _allowed_effects(proto),
+                "allowedModuleCategories": _allowed_module_categories(proto),
+                # Схемная сеть: коннекторы проводов по направлениям (или None)
+                # и максимальная длина провода в тайлах.
+                "connectors": build_circuit_connectors(proto),
+                "circuitWireMaxDistance": circuit_wire_max_distance(proto),
                 "craftingSpeed": proto.get("crafting_speed"),
                 "miningSpeed": proto.get("mining_speed"),
                 "researchingSpeed": proto.get("researching_speed"),
@@ -434,6 +921,10 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
                 "speed": proto.get("speed"),
                 "rocketPartsRequired": proto.get("rocket_parts_required"),
                 "filterCount": proto.get("filter_count", 0),
+                # число слотов инвентаря (контейнеры, вагоны, хабы) — максимум
+                # для ограничения слотов `bar` в окне настроек сущности
+                "inventorySize": proto.get("inventory_size"),
+                "speakerInstruments": build_speaker_instruments(proto),
                 "bulkInserterConfig": _looks_like_bulk_inserter(name, proto),
                 "logisticRadius": proto.get("logistic_radius"),
                 "constructionRadius": proto.get("construction_radius"),
@@ -464,11 +955,32 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
 
     catalog.sort(key=lambda e: (e["categoryOrder"], e["subgroupOrder"], e["itemOrder"]))
 
-    CATALOG_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CATALOG_CACHE_PATH, "w", encoding="utf-8") as f:
+    catalog_path = profile_dir / "entity_catalog.json"
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(catalog_path, "w", encoding="utf-8") as f:
         json.dump(catalog, f, ensure_ascii=False, indent=2)
 
     categories_found = len(set(e["category"] for e in catalog))
+
+    from app.services.sprite_service import crop_tile_sprites  # лениво: sprite_service импортирует этот модуль
+
+    signal_catalog = build_signal_catalog(raw, entity_name_map)
+    with open(profile_dir / "signals.json", "w", encoding="utf-8") as f:
+        json.dump(signal_catalog, f, ensure_ascii=False)
+
+    tile_catalog = build_tile_catalog(raw, entity_name_map)
+    with open(profile_dir / "tiles.json", "w", encoding="utf-8") as f:
+        json.dump(tile_catalog, f, ensure_ascii=False, indent=2)
+    # текстуры плиток этого профиля — в общее хранилище (merge-write)
+    tile_sprites_result = crop_tile_sprites(raw, [t["name"] for t in tile_catalog])
+
+    quality_catalog = build_quality_catalog(raw)
+    with open(profile_dir / "qualities.json", "w", encoding="utf-8") as f:
+        json.dump(quality_catalog, f, ensure_ascii=False, indent=2)
+
+    module_catalog = build_module_catalog(raw, entity_name_map)
+    with open(profile_dir / "modules.json", "w", encoding="utf-8") as f:
+        json.dump(module_catalog, f, ensure_ascii=False, indent=2)
 
     entity_names = {e["typeId"] for e in catalog}
     sprite_map = build_entity_sprite_map(raw, entity_names)
@@ -481,7 +993,7 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
     # на одну и ту же сущность.
     directional_skip_names = set(pipe_variant_map) | set(fluid_overlay_map)
     directional_map = build_directional_sprite_map(raw, entity_names, directional_skip_names)
-    recipe_result = build_recipe_catalog(raw)
+    recipe_result = build_recipe_catalog(raw, profile_dir)
 
     return {
         "total": len(catalog),
@@ -489,21 +1001,28 @@ def build_entity_catalog(force_redump: bool = False) -> dict:
         "scanned_sections": scanned_sections,
         "categories_found": categories_found,
         "sections_breakdown": entity_type_counts,
+        # ВНИМАНИЕ: sprite_map/pipe_variant_map/fluid_overlay_map/directional_map
+        # теперь ОБЩЕЕ (не по-профильное) хранилище, см. merge-write в
+        # entity_sprite_service.py — длины ниже отражают размер ОБЩЕГО
+        # хранилища после этой сборки, а не только сущностей ЭТОГО профиля.
         "sprites_extracted": len(sprite_map),
         "pipe_variant_entities": len(pipe_variant_map),
         "fluid_overlay_entities": len(fluid_overlay_map),
         "directional_sprite_entities": len(directional_map),
         "recipes_extracted": recipe_result["total"],
+        "modules": len(module_catalog),
+        "qualities": len(quality_catalog),
+        "tiles": len(tile_catalog),
+        "signals": len(signal_catalog["signals"]),
+        "tile_sprites": tile_sprites_result,
     }
 
 
-ENTITY_SPRITE_FRAMES_PATH = ENTITY_SPRITES_DIR.parent / "entity_sprite_frames.json"
-
-
-def get_cached_catalog() -> list[dict]:
-    if not CATALOG_CACHE_PATH.exists():
+def get_cached_catalog(profile_dir: Path) -> list[dict]:
+    catalog_path = profile_dir / "entity_catalog.json"
+    if not catalog_path.exists():
         return []
-    with open(CATALOG_CACHE_PATH, encoding="utf-8") as f:
+    with open(catalog_path, encoding="utf-8") as f:
         catalog = json.load(f)
 
     # Спрайты (PNG + entity_sprite_frames.json) пересобираются ОТДЕЛЬНЫМ
@@ -519,14 +1038,16 @@ def get_cached_catalog() -> list[dict]:
     # КАЖДОМ чтении каталога, а не доверяем однажды запечённым — тогда
     # порядок вызовов эндпоинтов пересборки перестаёт иметь значение.
     entity_sprite_frames: dict = {}
-    if ENTITY_SPRITE_FRAMES_PATH.exists():
+    frames_meta_path = entity_sprite_frames_path()
+    if frames_meta_path.exists():
         try:
-            entity_sprite_frames = json.loads(ENTITY_SPRITE_FRAMES_PATH.read_text(encoding="utf-8"))
+            entity_sprite_frames = json.loads(frames_meta_path.read_text(encoding="utf-8"))
         except Exception:
             entity_sprite_frames = {}
 
+    sprites_dir = entity_sprites_dir()
     existing_sprite_files = (
-        {p.stem for p in ENTITY_SPRITES_DIR.glob("*.png")} if ENTITY_SPRITES_DIR.exists() else set()
+        {p.stem for p in sprites_dir.glob("*.png")} if sprites_dir.exists() else set()
     )
 
     pipe_sprite_frames, existing_pipe_variant_files = _load_pipe_sprite_frame_state()
@@ -558,3 +1079,27 @@ def get_cached_catalog() -> list[dict]:
         )
 
     return catalog
+
+
+def build_entity_profile_origin_map(profile_ids: list[str]) -> dict[str, str]:
+    """
+    Для каждого typeId — id ПЕРВОГО (в переданном порядке, обычно от
+    простого к сложному — см. app.content.profile.ALL_PROFILE_IDS)
+    собранного профиля, в чьём каталоге эта сущность встречается.
+    Используется и scripts/build_content.py (для entity_profile_origin.json
+    в сборке деплоя), и GET /api/entities/profile-origin (для дев-сервера,
+    где нет собранного content/) — единая логика, читает те же
+    profile_cache_dir(pid)/entity_catalog.json, что и get_cached_catalog.
+    """
+    origin: dict[str, str] = {}
+    for pid in profile_ids:
+        catalog_path = profile_cache_dir(pid) / "entity_catalog.json"
+        if not catalog_path.exists():
+            continue
+        with open(catalog_path, encoding="utf-8") as f:
+            catalog = json.load(f)
+        for entry in catalog:
+            type_id = entry.get("typeId")
+            if type_id and type_id not in origin:
+                origin[type_id] = pid
+    return origin

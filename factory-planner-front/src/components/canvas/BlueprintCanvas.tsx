@@ -1,16 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useUiStore } from '../../store/uiStore'
 import { useCanvasStore } from '../../store/canvasStore'
-import type { PlacingGroupItem, PlacingState } from '../../store/canvasStore'
+import type { EntityDirection, PlacingGroupItem, PlacingState } from '../../store/canvasStore'
 import { EntityNode } from './EntityNode'
 import { StatPopover } from './StatPopover'
 import { BalancePanel } from '../balance-panel/BalancePanel'
 import { PlacementGhost } from './PlacementGhost'
+import { TileLayer } from './TileLayer'
+import { TileGhost, TileRectPreview } from './TileGhost'
+import { useTilePainting } from '../../hooks/useTilePainting'
+import { useCanvasPointerGuard } from '../../hooks/useCanvasPointerGuard'
+import { useWireTool } from '../../hooks/useWireTool'
+import { WireLayer } from './WireLayer'
+import { CombinatorConfigModal, CONFIGURABLE_TYPES } from '../circuit/CombinatorConfigModal'
+import { parseTileKey } from '../../lib/tiles'
+import { EntitySettingsPanel } from '../entitySettings/EntitySettingsPanel'
+import { openSettingsFor } from '../../lib/entitySettings/open'
+import { hasSettings } from '../../lib/entitySettings/registry'
 import { useClipboardStore } from '../../store/clipboardStore'
 import { ImportExportPanel } from './ImportExportPanel'
 import { buildPlacingGroup } from '../../lib/clipboard/buildPlacingGroup'
 import { useViewportStore } from '../../store/viewportStore'
 import { MachineInfoPanel } from './MachineInfoPanel'
+import { ModulesPanel } from './ModulesPanel'
 import { RecipePickerModal } from './RecipePickerModal'
 import { InserterInfoPanel } from './InserterInfoPanel'
 import { LoaderInfoPanel } from './LoaderInfoPanel'
@@ -33,7 +45,20 @@ import {
   undergroundDirectionTo,
   undergroundPairAnchor,
   undergroundTileDistance,
+  undergroundTunnelDirection,
 } from '../../lib/underground'
+import {
+  appendPathTo,
+  computeBeltDragPlacements,
+  computeEffectiveBeltPath,
+  computeRegularDragPlacements,
+  computeUndergroundDragPlacements,
+  directionBetween,
+  rotateCardinal,
+  type BeltCornerOverride,
+  type DragPlacementResult,
+  type DragTile,
+} from '../../lib/dragPlacement'
 
 const GRID = 32
 
@@ -98,6 +123,7 @@ export function BlueprintCanvas() {
 
   const clipboardBuffer = useClipboardStore((s) => s.buffer)
   const copyToClipboard = useClipboardStore((s) => s.copy)
+  const clipboardWires = useClipboardStore((s) => s.wires)
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const selectedEntity =
@@ -141,6 +167,16 @@ export function BlueprintCanvas() {
   const hoveredNetwork = hoveredGroupId ? (networks.groups.get(hoveredGroupId) ?? null) : null
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
+  // Плитки (слой под сущностями): кисть/заливка/стирание — hooks/useTilePainting.ts
+  const tilePaint = useTilePainting(wrapRef, placing)
+  // Нет выделения текста и потери мыши за окном во время жестов на холсте
+  useCanvasPointerGuard(wrapRef)
+  // Инструмент провода (схемная сеть) — hooks/useWireTool.ts
+  const wireToolApi = useWireTool(wrapRef)
+  // постановка сущности/плитки из курсора выключает инструмент провода
+  useEffect(() => {
+    if (placing) useUiStore.getState().setWireTool(null)
+  }, [placing])
 
   // Размер видимой области канваса — нужен, чтобы понять, какие сущности
   // реально попадают в кадр. Держим в стейте (не читаем напрямую из DOM
@@ -189,14 +225,30 @@ export function BlueprintCanvas() {
     return () => window.clearInterval(id)
   }, [])
 
+  // Отмена активной протяжки (Escape/ПКМ) — ничего не ставится (см.
+  // задачу). setPlacing(null) само по себе не чистит window-листенеры/
+  // ref протяжки, поэтому вызывается ОТДЕЛЬНО везде, где раньше был
+  // только setPlacing(null) для обычного выхода из постановки.
+  function cancelDragPlacement() {
+    dragPlaceRef.current = null
+    cornerOverrideRef.current = null
+    setDragPath(null)
+    window.removeEventListener('mousemove', handleDragPlaceMove)
+    window.removeEventListener('mouseup', handleDragPlaceUp)
+  }
+
   function handleCanvasMouseDownForPan(e: React.MouseEvent) {
-    if (e.button !== 2) return // только правая кнопка
+    // Правая кнопка и средняя: с плиткой в курсоре ПКМ стирает плитки (см.
+    // hooks/useTilePainting.ts, сюда не доходит), поэтому панорамировать
+    // можно и средней кнопкой.
+    if (e.button !== 2 && e.button !== 1) return
     e.preventDefault()
     // ПКМ во время постановки (в т.ч. двухшаговой подземной — см.
     // src/lib/underground.ts) отменяет её вместо панорамирования, как
     // Escape — реальная игра ведёт себя так же (ПКМ с предметом в
     // курсоре убирает его, не двигает камеру).
-    if (placing) {
+    if (placing && e.button === 2) {
+      cancelDragPlacement()
       setPlacing(null)
       return
     }
@@ -211,6 +263,10 @@ export function BlueprintCanvas() {
   }
 
   function handleWheel(e: React.WheelEvent) {
+    // Колесо над открытым окном/поповером (панель сущности, выбор рецепта,
+    // список модулей, плашка) не должно зумить холст за ним. React-события
+    // идут по дереву компонентов, поэтому окна (и порталы) сюда долетают.
+    if ((e.target as HTMLElement).closest('.machine-modal-overlay, .picker-overlay, .mod-popover, .stat-pop')) return
     e.preventDefault()
     const rect = wrapRef.current!.getBoundingClientRect()
     const cursorX = e.clientX - rect.left
@@ -244,11 +300,33 @@ export function BlueprintCanvas() {
   const [marquee, setMarquee] = useState<{ startX: number; startY: number; x: number; y: number } | null>(null)
   const marqueeRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null)
   const marqueeShiftRef = useRef(false)
+  // Ctrl при старте рамки — выделять только плитки
+  const marqueeCtrlRef = useRef(false)
+  const [marqueeTilesOnly, setMarqueeTilesOnly] = useState(false)
 
-  function getLocalPoint(e: React.MouseEvent) {
+  // Протяжка постановки (зажал ЛКМ с предметом в курсоре, повёл, отпустил —
+  // ставится линия) — см. handleCanvasMouseDown/handleDragPlaceMove/
+  // handleDragPlaceUp. path — мутируемый через ref (как marqueeRef/panRef
+  // выше, читается синхронно в нативных window-листенерах без лишних
+  // замыканий), dragPath — его зеркало в состоянии ТОЛЬКО для перерисовки
+  // призраков по пути.
+  const dragPlaceRef = useRef<{ path: DragTile[] } | null>(null)
+  const [dragPath, setDragPath] = useState<DragTile[] | null>(null)
+  // Угол R во время протяжки ленты (см. lib/dragPlacement.ts
+  // computeEffectiveBeltPath, задачу "R во время протяжки конвейеров") —
+  // только у лент, чистое React-состояние не нужно: влияет лишь на то, как
+  // dragPath превращается в эффективный путь при каждом вычислении
+  // призраков/батча, само по себе не рендерится напрямую.
+  const cornerOverrideRef = useRef<BeltCornerOverride | null>(null)
+
+  // point — объект с clientX/clientY: подходит и React.MouseEvent (клик/
+  // mousedown на канвасе), и нативный MouseEvent (window-листенеры
+  // протяжки/панорамирования/marquee — см. ниже), т.к. оба содержат эти
+  // два поля.
+  function getLocalPoint(point: { clientX: number; clientY: number }) {
     const rect = wrapRef.current!.getBoundingClientRect()
-    const screenX = e.clientX - rect.left
-    const screenY = e.clientY - rect.top
+    const screenX = point.clientX - rect.left
+    const screenY = point.clientY - rect.top
     return {
       x: (screenX - offsetX) / scale,
       y: (screenY - offsetY) / scale,
@@ -258,7 +336,19 @@ export function BlueprintCanvas() {
   function handleCanvasMouseDown(e: React.MouseEvent) {
     if (e.button !== 0) return
     if (e.target !== wrapRef.current) return
-    if (placing) return
+    if (placing) {
+      // Протяжка — см. handleDragPlaceMove/handleDragPlaceUp ниже. Не
+      // ставим сразу: ждём mouseup, там же порог "клик vs протяжка"
+      // (путь из одной клетки -> обычная постановка, как раньше).
+      const { x: rawX, y: rawY } = getLocalPoint(e)
+      const startTile: DragTile = { x: Math.round(rawX / GRID) * GRID, y: Math.round(rawY / GRID) * GRID }
+      dragPlaceRef.current = { path: [startTile] }
+      cornerOverrideRef.current = null
+      setDragPath([startTile])
+      window.addEventListener('mousemove', handleDragPlaceMove)
+      window.addEventListener('mouseup', handleDragPlaceUp)
+      return
+    }
     if (!selectionToolActive) {
       // Обычный режим — рамки множественного выделения тут нет, клик по
       // пустому месту просто снимает текущее выделение (единственный
@@ -270,6 +360,8 @@ export function BlueprintCanvas() {
 
     const { x, y } = getLocalPoint(e)
     marqueeShiftRef.current = e.shiftKey
+    marqueeCtrlRef.current = e.ctrlKey || e.metaKey
+    setMarqueeTilesOnly(marqueeCtrlRef.current)
     const initial = { startX: x, startY: y, x, y }
     marqueeRef.current = initial
     setMarquee(initial)
@@ -311,6 +403,29 @@ export function BlueprintCanvas() {
 
     const isClick = maxX - minX < 3 && maxY - minY < 3
 
+    if (marqueeCtrlRef.current) {
+      // Ctrl+рамка: выделяются ТОЛЬКО плитки (сущности не трогаем)
+      const tiles = useCanvasStore.getState().tiles
+      const c0x = Math.floor(minX / GRID)
+      const c1x = Math.floor((isClick ? minX : maxX - 0.001) / GRID)
+      const c0y = Math.floor(minY / GRID)
+      const c1y = Math.floor((isClick ? minY : maxY - 0.001) / GRID)
+      const keys: string[] = []
+      const area = (c1x - c0x + 1) * (c1y - c0y + 1)
+      const all = Object.keys(tiles)
+      if (all.length < area) {
+        for (const key of all) {
+          const [tx, ty] = parseTileKey(key)
+          if (tx >= c0x && tx <= c1x && ty >= c0y && ty <= c1y) keys.push(key)
+        }
+      } else {
+        for (let ty = c0y; ty <= c1y; ty++) for (let tx = c0x; tx <= c1x; tx++) if (tiles[`${tx},${ty}`]) keys.push(`${tx},${ty}`)
+      }
+      if (keys.length === 0 && !marqueeShiftRef.current) useUiStore.getState().clearSelection()
+      else useUiStore.getState().setSelectedTiles(keys, marqueeShiftRef.current)
+      return
+    }
+
     if (isClick) {
       if (!marqueeShiftRef.current) clearSelection()
       return
@@ -331,6 +446,9 @@ export function BlueprintCanvas() {
   }
 
   function handleCanvasMouseMove(e: React.MouseEvent) {
+    tilePaint.onMouseMove(e)
+    wireToolApi.onMouseMove(e)
+    if (tilePaint.tileItem) return // призрак плитки рисуется отдельно
     if (!placing || !wrapRef.current) {
       if (ghostPos) setGhostPos(null)
       return
@@ -341,13 +459,14 @@ export function BlueprintCanvas() {
     setGhostPos((prev) => (prev?.x === x && prev?.y === y ? prev : { x, y }))
   }
 
-  function handleCanvasClick(e: React.MouseEvent) {
-    if (e.target !== wrapRef.current) return
+  // Постановка в ТОЧНОЙ клетке (baseX/baseY — мировые px, уже снэппленные
+  // к сетке) — обычный клик без протяжки (вынесено из бывшего onClick,
+  // вызывается из handleDragPlaceUp по порогу "путь не вышел за пределы
+  // первой клетки") И группа-призрак при протяжке (вставка чертежа,
+  // протяжка для нескольких items отключена — см. задачу, там всегда
+  // просто точка отпускания ЛКМ).
+  function placeAtCursor(baseX: number, baseY: number) {
     if (!placing) return
-
-    const { x: rawX, y: rawY } = getLocalPoint(e)
-    const baseX = Math.round(rawX / GRID) * GRID
-    const baseY = Math.round(rawY / GRID) * GRID
 
     const toPlace = placing.items.map((item) => ({
       typeId: item.typeId,
@@ -362,7 +481,11 @@ export function BlueprintCanvas() {
       craftingCategories: item.craftingCategories,
       moduleSlots: item.moduleSlots,
       recipe: item.recipe,
+      quality: item.quality,
+      recipeQuality: item.recipeQuality,
       modules: item.modules,
+      moduleExtra: item.moduleExtra,
+      controlBehavior: item.controlBehavior,
       extra: item.extra,
     }))
 
@@ -427,9 +550,113 @@ export function BlueprintCanvas() {
       const added = addEntity(finalItem)
       if (added && nextPlacing) setPlacing(nextPlacing)
     } else {
-      const newIds = addEntities(toPlace)
+      const newIds = addEntities(toPlace, placing.wires)
       setSelection(newIds)
     }
+  }
+
+  // Призраки протяжки по виду сущности (см. lib/dragPlacement.ts) — одна
+  // функция и для превью во время протяжки (path = путь ДО текущего
+  // курсора), и для финального батча на mouseup (path = путь ДО финального
+  // курсора) — дальность/направление считаются идентично.
+  function computeDragGhosts(path: DragTile[], item: PlacingGroupItem): DragPlacementResult[] {
+    const catalogEntry = catalogByTypeId.get(item.typeId)
+    const maxDistance = catalogEntry?.ioHints?.undergroundMaxDistance
+    if (maxDistance != null) {
+      const isBelt = catalogEntry?.ioHints?.kind === 'underground-belt'
+      const pairs = computeUndergroundDragPlacements(
+        path,
+        { typeId: item.typeId, width: item.width, height: item.height, maxDistance, isBelt, baseExtra: item.extra },
+        entities,
+        catalogByTypeId,
+      )
+      const flat: DragPlacementResult[] = []
+      for (const pair of pairs) {
+        flat.push(pair.entrance)
+        if (pair.exit) flat.push(pair.exit)
+      }
+      return flat
+    }
+    if (catalogEntry?.ioHints?.kind === 'belt') {
+      // R-угол (см. lib/dragPlacement.ts computeEffectiveBeltPath,
+      // cornerOverrideRef/KeyR ниже) — только у лент, эффективный путь
+      // заменяет сырой органический, когда угол активен.
+      const effectivePath = computeEffectiveBeltPath(path, cornerOverrideRef.current)
+      return computeBeltDragPlacements(
+        effectivePath,
+        { width: item.width, height: item.height, extra: item.extra, fallbackDirection: item.direction },
+        entities,
+      )
+    }
+    return computeRegularDragPlacements(path, { width: item.width, height: item.height, direction: item.direction, extra: item.extra }, entities)
+  }
+
+  // Призрак протяжки -> полноценная PlacedEntity (минус id) — typeId/icon/
+  // label/craftingCategories/moduleSlots/recipe/modules берутся из базового
+  // item (не меняются в пределах одной протяжки), x/y/width/height/
+  // direction/extra — из конкретного призрака (direction/extra как раз то,
+  // что меняется по сущностям: направление лент по сегментам, вход/выход
+  // подземных пар).
+  function dragGhostToEntity(ghost: DragPlacementResult, base: PlacingGroupItem) {
+    return {
+      typeId: base.typeId,
+      type: base.type,
+      icon: base.icon,
+      label: base.label,
+      x: ghost.x,
+      y: ghost.y,
+      width: ghost.width,
+      height: ghost.height,
+      direction: ghost.direction,
+      craftingCategories: base.craftingCategories,
+      moduleSlots: base.moduleSlots,
+      recipe: base.recipe,
+      quality: base.quality,
+      recipeQuality: base.recipeQuality,
+      modules: base.modules,
+      moduleExtra: base.moduleExtra,
+      controlBehavior: base.controlBehavior,
+      extra: ghost.extra,
+    }
+  }
+
+  function handleDragPlaceMove(e: MouseEvent) {
+    if (!dragPlaceRef.current || !wrapRef.current) return
+    const { x: rawX, y: rawY } = getLocalPoint(e)
+    const tile: DragTile = { x: Math.round(rawX / GRID) * GRID, y: Math.round(rawY / GRID) * GRID }
+    const nextPath = appendPathTo(dragPlaceRef.current.path, tile)
+    if (nextPath !== dragPlaceRef.current.path) {
+      dragPlaceRef.current.path = nextPath
+      setDragPath(nextPath)
+    }
+  }
+
+  function handleDragPlaceUp() {
+    const state = dragPlaceRef.current
+    dragPlaceRef.current = null
+    setDragPath(null)
+    window.removeEventListener('mousemove', handleDragPlaceMove)
+    window.removeEventListener('mouseup', handleDragPlaceUp)
+    if (!state || !placing) {
+      cornerOverrideRef.current = null
+      return
+    }
+
+    // Группа-призрак (вставка чертежа) — протяжка отключена (см. задачу),
+    // всегда ставим одной точкой там, где отпустили ЛКМ (как раньше клик).
+    // Порог клик/протяжка (не вышли за пределы первой клетки) — туда же.
+    const isGroup = placing.items.length > 1
+    if (isGroup || state.path.length <= 1) {
+      cornerOverrideRef.current = null
+      const last = state.path[state.path.length - 1]
+      placeAtCursor(last.x, last.y)
+      return
+    }
+
+    const ghosts = computeDragGhosts(state.path, placing.items[0])
+    cornerOverrideRef.current = null
+    if (ghosts.length === 0) return
+    addEntities(ghosts.map((g) => dragGhostToEntity(g, placing.items[0])))
   }
 
   const lastMouse = useRef({ x: 0, y: 0 })
@@ -466,7 +693,7 @@ export function BlueprintCanvas() {
       if (ctrl && e.code === 'KeyC') {
         e.preventDefault()
         const selected = entities.filter((en) => selectedEntityIds.has(en.id))
-        if (selected.length > 0) copyToClipboard(selected)
+        if (selected.length > 0) copyToClipboard(selected, useCanvasStore.getState().wires)
         return
       }
 
@@ -474,7 +701,7 @@ export function BlueprintCanvas() {
         e.preventDefault()
         const selected = entities.filter((en) => selectedEntityIds.has(en.id))
         if (selected.length > 0) {
-          copyToClipboard(selected)
+          copyToClipboard(selected, useCanvasStore.getState().wires)
           removeEntities(selectedEntityIds)
           clearSelection()
         }
@@ -484,15 +711,67 @@ export function BlueprintCanvas() {
       if (ctrl && e.code === 'KeyV') {
         e.preventDefault()
         if (clipboardBuffer.length === 0) return
+        cancelDragPlacement()
         const group = buildPlacingGroup(clipboardBuffer)
-        setPlacing({ items: group })
+        setPlacing({ items: group, wires: clipboardWires })
         return
+      }
+
+      if (e.code === 'KeyE' && !ctrl && !e.shiftKey && !e.altKey && !e.repeat) {
+        // E — окно настроек сущности под курсором или выделенной
+        const ui = useUiStore.getState()
+        // сущность под курсором (hoveredEntityId заполняется не для всех типов)
+        const underCursor = document.elementsFromPoint(lastMouse.current.x, lastMouse.current.y)
+          .map((el) => (el as HTMLElement).closest?.('.entity') as HTMLElement | null)
+          .find((el) => el?.dataset.entityId)
+        const candidates = [
+          underCursor ? Number(underCursor.dataset.entityId) : null,
+          ui.hoveredEntityId,
+          ...(ui.selectedEntityIds.size > 0 ? [[...ui.selectedEntityIds][0]] : []),
+        ]
+        if (candidates.some((t) => t !== null && openSettingsFor(t))) {
+          e.preventDefault()
+          return
+        }
       }
 
       if (e.code === 'KeyR' && !ctrl) {
         e.preventDefault()
         const delta: 1 | -1 = e.shiftKey ? -1 : 1
         if (placing) {
+          // Во время активной протяжки направление зафиксировано на всю
+          // линию для обычных сущностей/труб/подземных (см. задачу — R
+          // "не меняется"), иначе пришлось бы задним числом перекрашивать
+          // уже показанные призраки. Для лент R в протяжке — отдельный
+          // механизм "угла" (см. задачу про R во время протяжки конвейеров).
+          if (dragPlaceRef.current) {
+            const isBeltDrag = catalogByTypeId.get(placing.items[0].typeId)?.ioHints?.kind === 'belt'
+            if (!isBeltDrag) return
+            const curPath = computeEffectiveBeltPath(dragPlaceRef.current.path, cornerOverrideRef.current)
+            if (curPath.length === 0) return
+            const override = cornerOverrideRef.current
+            // Открыт ли уже "хвост" ТЕКУЩЕГО угла (есть ли клетки за
+            // замороженным префиксом) — если да, новый R ставит НОВЫЙ угол
+            // в текущем конце пути; если нет (угла ещё не было, или он есть,
+            // но хвост ещё не появился) — просто крутим ось дальше от ТОГО
+            // ЖЕ угла (см. задачу: "повторное R... не создаёт новый угол").
+            const gateOpen = !!override && curPath.length > override.frozenLen
+            if (!override || gateOpen) {
+              const cornerTile = curPath[curPath.length - 1]
+              const dirIntoCorner =
+                curPath.length >= 2
+                  ? directionBetween(curPath[curPath.length - 2], cornerTile)
+                  : ((placing.items[0].direction ?? 0) as EntityDirection)
+              cornerOverrideRef.current = {
+                frozenLen: curPath.length,
+                cornerTile,
+                axis: rotateCardinal(dirIntoCorner, delta),
+              }
+            } else {
+              cornerOverrideRef.current = { ...override, axis: rotateCardinal(override.axis, delta) }
+            }
+            return
+          }
           // ...placing сохраняет undergroundAutoCycle/undergroundPhase/
           // undergroundEntranceAnchor — R в фазе выхода просто крутит
           // направление ОДНОЙ выходной части, как обычный призрак (см.
@@ -536,6 +815,11 @@ export function BlueprintCanvas() {
       }
 
       if (e.code === 'KeyQ' && !e.repeat) {
+        // Q всегда заменяет placing целиком (новым подбором или null) —
+        // если в этот момент шла протяжка старой сущности, её след нужно
+        // сбросить, иначе mouseup позже попытается поставить НОВУЮ
+        // сущность по пути СТАРОЙ.
+        cancelDragPlacement()
         const target = document.elementFromPoint(lastMouse.current.x, lastMouse.current.y)
         const entityEl = target?.closest('[data-entity-id]') as HTMLElement | null
 
@@ -567,6 +851,13 @@ export function BlueprintCanvas() {
       }
 
       if (e.code === 'Delete' || e.code === 'Backspace') {
+        const tileSel = useUiStore.getState().selectedTileKeys
+        if (tileSel.size > 0) {
+          e.preventDefault()
+          useCanvasStore.getState().paintTiles([...tileSel].map(parseTileKey), null, true)
+          useUiStore.getState().clearSelection()
+          return
+        }
         if (selectedEntityIds.size > 0) {
           e.preventDefault()
           removeEntities(selectedEntityIds)
@@ -576,8 +867,10 @@ export function BlueprintCanvas() {
       }
 
       if (e.code === 'Escape') {
-        if (placing) setPlacing(null)
-        else clearSelection()
+        if (placing) {
+          cancelDragPlacement()
+          setPlacing(null)
+        } else clearSelection()
       }
     }
 
@@ -588,6 +881,7 @@ export function BlueprintCanvas() {
     catalogByTypeId,
     selectedEntityIds,
     clipboardBuffer,
+    clipboardWires,
     placing,
     setPlacing,
     removeEntities,
@@ -602,7 +896,7 @@ export function BlueprintCanvas() {
   ])
 
   const ghostItemsWithPos =
-    placing && ghostPos
+    placing && ghostPos && !tilePaint.tileItem
       ? placing.items.map((item) => ({
           ...item,
           x: ghostPos.x + item.offsetX,
@@ -617,6 +911,15 @@ export function BlueprintCanvas() {
         )
       : false
 
+  // Протяжка (см. lib/dragPlacement.ts) — только для ОДНОГО предмета в
+  // курсоре и только после того, как путь реально покинул стартовую
+  // клетку (иначе это обычный клик, см. handleDragPlaceUp) — до этого
+  // момента призраки рисуются как раньше, через ghostItemsWithPos/ghostPos.
+  const isDragPlacing = !!placing && placing.items.length === 1 && !!dragPath && dragPath.length > 1
+  const dragGhosts = useMemo(
+    () => (isDragPlacing && placing && dragPath ? computeDragGhosts(dragPath, placing.items[0]) : []),
+    [isDragPlacing, dragPath, placing, entities, catalogByTypeId],
+  )
   // Подсказка дальности подземного конвейера/трубы (см.
   // src/lib/underground.ts, UndergroundRange.tsx) — в фазе выхода
   // двухшаговой постановки показываем от уже поставленного входа
@@ -639,9 +942,23 @@ export function BlueprintCanvas() {
   // UndergroundRange.tsx).
   const undergroundAnchorIsBelt =
     catalogByTypeId.get(undergroundAnchor?.typeId ?? '')?.ioHints?.kind === 'underground-belt'
+  // Полоса должна физически тянуться туда, куда реально ведёт тоннель —
+  // для труб это ПРОТИВОПОЛОЖНАЯ сторона от entity.direction (видимый
+  // патрубок смотрит в одну сторону, тоннель — в другую, см.
+  // undergroundTunnelDirection/AxisInfo.tunnelDirection). Раньше сюда
+  // передавали undergroundAnchor.direction напрямую — для труб полоса
+  // визуально тянулась не в ту сторону, хотя появлялась/пропадала
+  // (isUndergroundGhostConnected) правильно.
+  const undergroundAnchorTunnelDirection = undergroundAnchor
+    ? undergroundTunnelDirection(undergroundAnchor.typeId, undergroundAnchor.direction, catalogByTypeId)
+    : null
   const undergroundAnchorDistance = (() => {
     if (!undergroundAnchor || undergroundAnchorCatalogMax == null || !ghostItemsWithPos[0]) return null
-    const toGhostDistance = undergroundAxisDistanceToPoint(undergroundAnchor, ghostItemsWithPos[0], catalogByTypeId)
+    const toGhostDistance = undergroundAxisDistanceToPoint(
+      undergroundAnchor,
+      { x: ghostItemsWithPos[0].x, y: ghostItemsWithPos[0].y, direction: ghostItemsWithPos[0].direction },
+      catalogByTypeId,
+    )
     if (toGhostDistance === null || toGhostDistance < 1) return null
     return Math.min(toGhostDistance, undergroundAnchorCatalogMax)
   })()
@@ -707,31 +1024,71 @@ export function BlueprintCanvas() {
   // поэтому там клик выделяет (см. EntityNode.handleMouseUp), но панель
   // показывать не должен.
   const canShowEntityPanel = Boolean(selectedEntity) && lastSelectionSource === 'click' && !selectionToolActive
-  type PanelKind = 'inserter' | 'loader' | 'mining-drill' | 'lab' | 'rocket-silo' | 'roboport' | 'machine' | 'stat' | null
-  const panelKind: PanelKind = !canShowEntityPanel || !selectedEntity
+  // кнопка «Настройки» у выделенной сущности с записью в реестре настроек
+  const settingsTarget = useMemo(() => {
+    if (selectionToolActive && lastSelectionSource !== 'click') return undefined
+    return entities.find((e) => selectedEntityIds.has(e.id) && hasSettings(e))
+  }, [entities, selectedEntityIds, selectionToolActive, lastSelectionSource])
+  const settingsGroupSize = settingsTarget ? entities.filter((e) => selectedEntityIds.has(e.id) && e.type === settingsTarget.type).length : 0
+  // Один клик по сущности с записью в реестре настроек открывает окно
+  // настроек (вместо инфо-панели). Исключения — сущности, у которых в
+  // панели есть другое: ракетная шахта (рецепт, модули), массовый
+  // манипулятор (своя конфигурация); у них окно — по E или кнопке.
+  const settingsOnClick = canShowEntityPanel && !!selectedEntity && hasSettings(selectedEntity)
+    && selectedEntity.type !== 'rocket-silo' && !selectedCatalogEntry?.bulkInserterConfig && !placing
+  const settingsOpen = useUiStore((s) => s.settingsEntityIds !== null)
+  const openEntitySettings = useUiStore((s) => s.openEntitySettings)
+  useEffect(() => {
+    if (settingsOnClick && selectedEntity && !settingsOpen) openEntitySettings([selectedEntity.id], true)
+  }, [settingsOnClick, selectedEntity?.id, settingsOpen, openEntitySettings])
+  type PanelKind = 'inserter' | 'loader' | 'mining-drill' | 'lab' | 'rocket-silo' | 'roboport' | 'machine' | 'modules' | 'stat' | 'combinator' | null
+  const panelKind: PanelKind = !canShowEntityPanel || !selectedEntity || settingsOnClick
     ? null
-    : TYPE_PANEL_MAP[selectedEntity.type ?? ''] ??
-      (selectedEntity.craftingCategories && selectedEntity.craftingCategories.length > 0 ? 'machine' : 'stat')
+    : CONFIGURABLE_TYPES.has(selectedEntity.type ?? '')
+      ? 'combinator'
+      : TYPE_PANEL_MAP[selectedEntity.type ?? ''] ??
+      (selectedEntity.craftingCategories && selectedEntity.craftingCategories.length > 0
+        ? 'machine'
+        : (selectedEntity.moduleSlots ?? selectedCatalogEntry?.moduleSlots ?? 0) > 0
+          ? 'modules'
+          : 'stat')
 
   return (
     <div
       className="canvas-wrap"
       ref={wrapRef}
-      onClick={handleCanvasClick}
       onMouseDown={(e) => {
         handleCanvasMouseDown(e)
         handleCanvasMouseDownForPan(e)
       }}
       onMouseMove={handleCanvasMouseMove}
-      onMouseLeave={() => setGhostPos(null)}
+      onDoubleClick={(e) => {
+        // двойной клик по сущности с окном настроек. Событие приходит на
+        // холст, а не на сущность (pointer capture жеста), поэтому сущность
+        // ищем по точке курсора
+        const hit = document.elementsFromPoint(e.clientX, e.clientY)
+          .map((el) => (el as HTMLElement).closest?.('.entity') as HTMLElement | null)
+          .find((el) => el?.dataset.entityId)
+        if (hit && openSettingsFor(Number(hit.dataset.entityId))) e.stopPropagation()
+      }}
+      onMouseDownCapture={(e) => {
+        tilePaint.onMouseDownCapture(e)
+        wireToolApi.onMouseDownCapture(e)
+      }}
+      onMouseLeave={() => {
+        setGhostPos(null)
+        tilePaint.onMouseLeave()
+        wireToolApi.onMouseLeave()
+      }}
       onWheel={handleWheel}
       onContextMenu={(e) => e.preventDefault()}
       style={{
-        cursor: placing ? 'none' : 'default',
+        cursor: placing ? 'none' : wireToolApi.wireTool ? (wireToolApi.pendingCheck && !wireToolApi.pendingCheck.ok ? 'not-allowed' : 'crosshair') : 'default',
         backgroundPosition: `${offsetX}px ${offsetY}px`,
         backgroundSize: `${GRID * scale}px ${GRID * scale}px`,
       }}
     >
+      <TileLayer width={viewportSize.width} height={viewportSize.height} />
       <div
         className="canvas-viewport"
         style={{
@@ -751,28 +1108,44 @@ export function BlueprintCanvas() {
           />
         ))}
 
-        {ghostItemsWithPos.map((item, i) => (
-          <PlacementGhost
-            key={i}
-            typeId={item.typeId}
-            icon={item.icon}
-            label={item.label}
-            x={item.x}
-            y={item.y}
-            width={item.width}
-            height={item.height}
-            direction={item.direction}
-            blocked={ghostBlocked}
-            connects={ghostConnects}
-          />
-        ))}
+        {isDragPlacing && placing
+          ? dragGhosts.map((g, i) => (
+              <PlacementGhost
+                key={i}
+                typeId={placing.items[0].typeId}
+                icon={placing.items[0].icon}
+                label={placing.items[0].label}
+                x={g.x}
+                y={g.y}
+                width={g.width}
+                height={g.height}
+                direction={g.direction}
+                blocked={false}
+                connects={g.connects}
+              />
+            ))
+          : ghostItemsWithPos.map((item, i) => (
+              <PlacementGhost
+                key={i}
+                typeId={item.typeId}
+                icon={item.icon}
+                label={item.label}
+                x={item.x}
+                y={item.y}
+                width={item.width}
+                height={item.height}
+                direction={item.direction}
+                blocked={ghostBlocked}
+                connects={ghostConnects}
+              />
+            ))}
 
         {undergroundAnchor && undergroundAnchorDistance != null && (
           <UndergroundRange
             key={`anchor-${undergroundAnchor.x}-${undergroundAnchor.y}-${undergroundAnchor.direction}`}
             x={undergroundAnchor.x}
             y={undergroundAnchor.y}
-            direction={undergroundAnchor.direction}
+            direction={undergroundAnchorTunnelDirection ?? undergroundAnchor.direction}
             maxDistance={undergroundAnchorDistance}
             chevrons={undergroundAnchorIsBelt}
           />
@@ -789,7 +1162,29 @@ export function BlueprintCanvas() {
           />
         )}
 
-        {marqueeRect && <div className="marquee-box" style={marqueeRect} />}
+        {tilePaint.tileItem && tilePaint.cursorCell && !tilePaint.rect && (
+          <TileGhost name={tilePaint.tileItem.typeId} x={tilePaint.cursorCell.x} y={tilePaint.cursorCell.y} />
+        )}
+        {tilePaint.rect && <TileRectPreview rect={tilePaint.rect} />}
+        {settingsTarget && (
+          <button
+            className="es-open-btn"
+            style={{ left: settingsTarget.x, top: settingsTarget.y - 26 / scale, transform: `scale(${1 / scale})`, transformOrigin: 'left top' }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); openSettingsFor(settingsTarget.id) }}
+            title="Окно настроек (E или двойной клик)"
+          >
+            ⚙ Настройки{selectedEntityIds.size > 1 ? ` ×${settingsGroupSize}` : ''}
+          </button>
+        )}
+        <WireLayer
+          cursor={wireToolApi.cursor}
+          hoverEntityId={wireToolApi.hoverEntityId}
+          hoverConnector={wireToolApi.hoverConnector}
+          pendingCheck={wireToolApi.pendingCheck}
+        />
+
+        {marqueeRect && <div className={`marquee-box${marqueeTilesOnly ? ' tiles' : ''}`} style={marqueeRect} />}
       </div>
 
       {panelKind === 'inserter' && selectedEntity && (
@@ -844,12 +1239,18 @@ export function BlueprintCanvas() {
           ? (
             <RecipePickerModal
               craftingCategories={selectedEntity.craftingCategories!}
-              onPick={(recipeName) => setEntityRecipe(selectedEntity.id, recipeName)}
+              initialQuality={selectedEntity.recipeQuality}
+              onPick={(recipeName, quality) => setEntityRecipe(selectedEntity.id, recipeName, quality ?? null)}
               onClose={clearSelection}
             />
           )
-          : <MachineInfoPanel entity={selectedEntity} onClose={clearSelection} />
+          : <MachineInfoPanel entity={selectedEntity} catalogEntry={selectedCatalogEntry} onClose={clearSelection} />
       )}
+      {panelKind === 'modules' && selectedEntity && (
+        <ModulesPanel entity={selectedEntity} catalogEntry={selectedCatalogEntry} onClose={clearSelection} />
+      )}
+      <EntitySettingsPanel />
+      {panelKind === 'combinator' && selectedEntity && <CombinatorConfigModal entity={selectedEntity} onClose={clearSelection} />}
       {panelKind === 'stat' && selectedEntity && (
         <StatPopover entity={selectedEntity} />
       )}

@@ -2,14 +2,25 @@ import { useMemo, useState } from 'react'
 import { useRecipeCatalogStore } from '../../store/recipeCatalogStore'
 import type { Recipe } from '../../lib/api/recipes'
 import { isBlankIcon } from '../../lib/api/client'
+import { QualityRow } from '../common/QualityRow'
+import { storedQuality } from '../../lib/quality'
+import { ItemIcon } from '../common/ItemIcon'
+import { useEntityCatalogStore } from '../../store/entityCatalogStore'
 
 interface Props {
   craftingCategories: string[]
-  onPick: (recipeName: string) => void
+  // Текущее качество ингредиентов рецепта машины (undefined = normal)
+  initialQuality?: string
+  // quality — выбранное «Качество ингредиентов» (undefined = normal)
+  onPick: (recipeName: string, quality: string | undefined) => void
   onClose: () => void
 }
 
-export function RecipePickerModal({ craftingCategories, onPick, onClose }: Props) {
+export function RecipePickerModal({ craftingCategories, initialQuality, onPick: onPickRaw, onClose }: Props) {
+  const hasQualities = useEntityCatalogStore((s) => s.qualities.length > 0)
+  const [quality, setQuality] = useState<string | undefined>(initialQuality)
+  // в профилях без качества recipeQuality не пишем
+  const onPick = (name: string) => onPickRaw(name, hasQualities ? storedQuality(quality) : undefined)
   const recipes = useRecipeCatalogStore((s) => s.recipes)
   const [query, setQuery] = useState('')
 
@@ -109,7 +120,7 @@ export function RecipePickerModal({ craftingCategories, onPick, onClose }: Props
               <div className="gm-grid">
                 {searchResults.map((r) => (
                   <div key={r.name} className="gm-cell" title={r.label} onClick={() => onPick(r.name)}>
-                    {r.icon && !isBlankIcon(r.icon) && <img src={r.icon} alt={r.label} />}
+                    {r.icon && !isBlankIcon(r.icon) && <ItemIcon src={r.icon} alt={r.label} quality={hasQualities ? quality : undefined} />}
                   </div>
                 ))}
                 {searchResults.length === 0 && <div className="gm-empty">Ничего не найдено</div>}
@@ -120,7 +131,7 @@ export function RecipePickerModal({ craftingCategories, onPick, onClose }: Props
                   <div className="gm-row" key={subgroup}>
                     {items.map((r) => (
                       <div key={r.name} className="gm-cell" title={r.label} onClick={() => onPick(r.name)}>
-                        {r.icon && !isBlankIcon(r.icon) && <img src={r.icon} alt={r.label} />}
+                        {r.icon && !isBlankIcon(r.icon) && <ItemIcon src={r.icon} alt={r.label} quality={hasQualities ? quality : undefined} />}
                       </div>
                     ))}
                   </div>
@@ -135,6 +146,7 @@ export function RecipePickerModal({ craftingCategories, onPick, onClose }: Props
               </div>
             )}
           </div>
+          <QualityRow value={quality} onChange={setQuality} label="Качество ингредиентов" />
         </div>
       </div>
     </div>

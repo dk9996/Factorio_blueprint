@@ -1,5 +1,8 @@
+import { EntityTitle } from './EntityTitle'
+import { EntityPreview } from './EntityPreview'
+import { EntityQuality } from './EntityQuality'
 import type { PlacedEntity } from '../../store/canvasStore'
-import { EntityFilterSlots } from './EntityFilterSlots'
+import { useUiStore } from '../../store/uiStore'
 
 interface Props {
   entity: PlacedEntity
@@ -7,12 +10,19 @@ interface Props {
   onClose: () => void
 }
 
-export function LoaderInfoPanel({ entity, filterCount, onClose }: Props) {
+export function LoaderInfoPanel({ entity, onClose }: Props) {
   return (
-    <div className="machine-modal-overlay" onClick={onClose}>
+    <div
+      className="machine-modal-overlay"
+      onClick={(e) => {
+        // второй клик двойного клика по сущности — сразу окно настроек
+        onClose()
+        if (e.detail >= 2) useUiStore.getState().openEntitySettings([entity.id])
+      }}
+    >
       <div className="machine-modal ins-modal" onClick={(e) => e.stopPropagation()}>
         <div className="mm-titlebar">
-          <span className="mm-titlebar-name">{entity.label}</span>
+          <EntityTitle entity={entity} />
           <div className="mm-titlebar-actions">
             <button className="mm-icon-btn" title="Связи">🔗</button>
             <button className="mm-close-btn" onClick={onClose} title="Закрыть">✕</button>
@@ -26,10 +36,16 @@ export function LoaderInfoPanel({ entity, filterCount, onClose }: Props) {
         </div>
 
         <div className="mm-preview">
-          <img src={entity.icon} alt={entity.label} />
+          <EntityPreview entity={entity} />
         </div>
+        <EntityQuality entity={entity} />
 
-        <EntityFilterSlots entity={entity} filterCount={filterCount} />
+        <button
+          className="ie-btn es-panel-btn"
+          onClick={() => { onClose(); useUiStore.getState().openEntitySettings([entity.id]) }}
+        >
+          ⚙ Настройки: фильтры, размер стака…
+        </button>
       </div>
     </div>
   )

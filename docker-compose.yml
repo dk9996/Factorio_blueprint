@@ -1,0 +1,101 @@
+# Проект compose и все ресурсы имеют префикс factory-planner — на сервере
+# рядом живёт Amnezia VPN со своими контейнерами/сетями, мы их не трогаем
+# и не пересекаемся с ними именами.
+name: factory-planner
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: factory-planner-postgres
+    restart: unless-stopped
+    # Без ports: БД доступна только изнутри сети compose.
+    environment:
+      POSTGRES_DB: factory_planner
+      POSTGRES_USER: factory_planner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+    # Скромные настройки под сервер на 2 ГБ RAM (рядом ещё VPN и Caddy).
+    command: >
+      postgres
+      -c shared_buffers=64MB
+      -c effective_cache_size=256MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+      -c max_connections=30
+    mem_limit: 384m
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory_planner -d factory_planner"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging: &logging
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  backend:
+    build: ./factory-planner-backend
+    image: factory-planner-backend:latest
+    container_name: factory-planner-backend
+    restart: unless-stopped
+    # Без ports: наружу backend виден только через Caddy.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?задайте DATABASE_URL в .env}
+      SECRET_KEY: ${SECRET_KEY:?задайте SECRET_KEY в .env}
+      CORS_ALLOWED_ORIGINS_RAW: ${ORIGIN:?задайте ORIGIN в .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      CONTENT_DIR: /content
+      MODS_ENABLED: ${MODS_ENABLED:-false}
+      REBUILD_ENABLED: "false"
+    mem_limit: 512m
+    volumes:
+      # Готовый контент (результат build_content.py) — только чтение.
+      - ./content:/content:ro
+    networks: [net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: factory-planner-caddy
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    # ЕДИНСТВЕННЫЕ опубликованные порты всего проекта. Переменные нужны
+    # только для локальной проверки (на сервере остаются 80/443).
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-factory-planner.duckdns.org}
+    mem_limit: 128m
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend-dist:/srv/frontend:ro
+      - ./content:/content:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [net]
+    logging: *logging
+
+networks:
+  net:
+    name: factory-planner_net
+
+volumes:
+  pgdata:
+    name: factory-planner_pgdata
+  caddy_data:
+    name: factory-planner_caddy_data
+  caddy_config:
+    name: factory-planner_caddy_config

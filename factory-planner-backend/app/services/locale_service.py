@@ -49,6 +49,12 @@ def _base_locale_dirs(lang: str) -> list[Path]:
     core_locale = settings.factorio_game_path / "data" / "core" / "locale" / lang
     if core_locale.exists():
         dirs.append(core_locale)
+    # Официальные DLC-паки (названия модулей качества, сущностей Space Age и
+    # т.д.) — после base/core, чтобы при совпадении ключа побеждали они.
+    for pak in ("elevated-rails", "quality", "space-age", "recycler"):
+        pak_locale = settings.factorio_game_path / "data" / pak / "locale" / lang
+        if pak_locale.exists():
+            dirs.append(pak_locale)
     return dirs
 
 
@@ -185,3 +191,83 @@ def get_fluid_name_locale() -> dict[str, str]:
                     result.setdefault(key, value)
 
     return result
+
+
+def get_quality_name_locale() -> dict[str, str]:
+    """{quality_name: человекочитаемое_имя} из секции [quality-name]
+    (core + пак quality) — для списка качеств профиля (см. dump_service)."""
+    result: dict[str, str] = {}
+    mod_sources = build_mod_sources()
+    for lang in PREFERRED_LANGS:
+        for locale_dir in _base_locale_dirs(lang):
+            for cfg_path in locale_dir.rglob("*.cfg"):
+                try:
+                    text = cfg_path.read_bytes().decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for key, value in _parse_section(text, "quality-name").items():
+                    result.setdefault(key, value)
+        for mod_name, source in mod_sources.items():
+            for rel_path in source.list_files(f"locale/{lang}", ".cfg"):
+                data = source.read_bytes(rel_path)
+                if not data:
+                    continue
+                for key, value in _parse_section(data.decode("utf-8", errors="ignore"), "quality-name").items():
+                    result.setdefault(key, value)
+    return result
+
+
+def get_tile_name_locale() -> dict[str, str]:
+    """{tile_name: имя} из секции [tile-name] (base/core/DLC)."""
+    result: dict[str, str] = {}
+    mod_sources = build_mod_sources()
+    for lang in PREFERRED_LANGS:
+        for locale_dir in _base_locale_dirs(lang):
+            for cfg_path in locale_dir.rglob("*.cfg"):
+                try:
+                    text = cfg_path.read_bytes().decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for key, value in _parse_section(text, "tile-name").items():
+                    result.setdefault(key, value)
+        for mod_name, source in mod_sources.items():
+            for rel_path in source.list_files(f"locale/{lang}", ".cfg"):
+                data = source.read_bytes(rel_path)
+                if not data:
+                    continue
+                for key, value in _parse_section(data.decode("utf-8", errors="ignore"), "tile-name").items():
+                    result.setdefault(key, value)
+    return result
+
+
+def _get_section_locale(section: str) -> dict[str, str]:
+    """{ключ: текст} из секции locale-файлов игры и модов (русский приоритетнее)."""
+    result: dict[str, str] = {}
+    mod_sources = build_mod_sources()
+    for lang in PREFERRED_LANGS:
+        for locale_dir in _base_locale_dirs(lang):
+            for cfg_path in locale_dir.rglob("*.cfg"):
+                try:
+                    text = cfg_path.read_bytes().decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for key, value in _parse_section(text, section).items():
+                    result.setdefault(key, value)
+        for mod_name, source in mod_sources.items():
+            for rel_path in source.list_files(f"locale/{lang}", ".cfg"):
+                data = source.read_bytes(rel_path)
+                if not data:
+                    continue
+                for key, value in _parse_section(data.decode("utf-8", errors="ignore"), section).items():
+                    result.setdefault(key, value)
+    return result
+
+
+def get_virtual_signal_name_locale() -> dict[str, str]:
+    """{virtual_signal_name: имя} из секции [virtual-signal-name]."""
+    return _get_section_locale("virtual-signal-name")
+
+
+def get_speaker_locale() -> tuple[dict[str, str], dict[str, str]]:
+    """({инструмент: имя}, {нота/звук: имя}) программируемой колонки."""
+    return _get_section_locale("programmable-speaker-instrument"), _get_section_locale("programmable-speaker-note")

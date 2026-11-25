@@ -30,6 +30,16 @@ body{
   letter-spacing:0.5px;
   font-size:13px;
 }
+.topbar-project-name{
+  background:none;border:1px solid transparent;border-radius:3px;
+  color:var(--text);font-size:13px;padding:4px 7px;cursor:text;max-width:260px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.topbar-project-name:hover{border-color:var(--line);}
+.topbar-project-name-input{
+  background:var(--bg-void);border:1px solid var(--accent-dim);border-radius:3px;
+  color:var(--text);font-size:13px;padding:4px 7px;width:220px;
+}
 .topbar .breadcrumb{color:var(--text-dim);}
 .topbar .breadcrumb b{color:var(--text);font-weight:500;}
 .topbar .spacer{flex:1;}
@@ -131,8 +141,8 @@ body{
   position:relative;overflow:hidden;
   background-color:var(--bg-canvas);
   background-image:
-    linear-gradient(var(--line-soft) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
   background-size:32px 32px;
 }
 
@@ -684,6 +694,8 @@ body{
   pointer-events:none;
   z-index:16;
 }
+/* Ctrl+рамка — выделение только плиток */
+.marquee-box.tiles{border-color:#5fd18a;background:rgba(95,209,138,0.14);border-style:dashed;}
 /* ===== IMPORT / EXPORT ===== */
 .ie-buttons{
   position:absolute;top:14px;left:14px;
@@ -701,6 +713,10 @@ body{
   background:var(--accent);border-color:var(--accent-dim);color:#1a1400;font-weight:600;
 }
 .ie-btn.primary:hover{filter:brightness(1.08);}
+.ie-btn.danger{
+  background:var(--bad);border-color:var(--bad);color:#1a0400;font-weight:600;
+}
+.ie-btn.danger:hover{filter:brightness(1.1);}
 
 .ie-modal{width:520px;}
 .ie-body{padding:12px 14px;}
@@ -735,6 +751,9 @@ body{
 .ie-summary-title{font-weight:600;margin-bottom:4px;}
 .ie-summary-skip{
   margin-top:6px;color:var(--bad);font-size:11px;word-break:break-word;
+}
+.ie-dlc-offer{
+  margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;
 }
 .ie-ghost-row{
   display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--text-dim);
@@ -1056,3 +1075,639 @@ body{
 .recipe-picker-modal{
   width:600px;
 }
+
+/* ===== MAIN MENU (список проектов) ===== */
+.main-menu{
+  display:flex;flex-direction:column;
+  height:100vh;
+  background:var(--bg-void);
+}
+.mm-header{
+  display:flex;align-items:center;gap:14px;
+  padding:0 18px;height:56px;flex-shrink:0;
+  background:var(--bg-panel);border-bottom:1px solid var(--line);
+}
+.mm-header .spacer{flex:1;}
+.mm-logo{
+  font-family:'JetBrains Mono','Consolas',monospace;
+  font-weight:700;color:var(--accent);letter-spacing:0.5px;font-size:15px;
+}
+.mm-github{
+  display:flex;align-items:center;justify-content:center;
+  color:var(--text-dim);
+}
+.mm-github:hover{color:var(--text);}
+.mm-user-menu{
+  display:flex;align-items:center;gap:8px;
+}
+.mm-user-name{color:var(--text-dim);font-size:13px;}
+.mm-logout-btn{
+  background:none;border:none;color:var(--text-dim);font-size:12px;
+  cursor:pointer;padding:0;
+}
+.mm-logout-btn:hover{color:var(--accent);}
+.mm-search{width:260px;}
+.mm-body{
+  flex:1;overflow-y:auto;padding:24px 28px;
+}
+.mm-empty{
+  display:flex;align-items:center;justify-content:center;
+  padding:24px 0;color:var(--text-dim);font-size:14px;text-align:center;
+}
+.mm-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));
+  gap:16px;
+}
+
+.proj-card-create{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  min-height:100%;
+  background:none;border:1px dashed var(--line);border-radius:6px;
+  color:var(--text-dim);font-size:13px;cursor:pointer;
+}
+.proj-card-create:hover{border-color:var(--accent-dim);color:var(--text);}
+.proj-card-create:disabled{opacity:.6;cursor:not-allowed;}
+.proj-card-create-plus{font-size:26px;line-height:1;color:var(--accent);}
+
+.proj-card{
+  position:relative;
+  background:var(--bg-panel);border:1px solid var(--line);border-radius:6px;
+  overflow:hidden;cursor:pointer;
+  display:flex;flex-direction:column;
+}
+.proj-card:hover{border-color:var(--accent-dim);}
+.proj-card.busy{opacity:.6;pointer-events:none;}
+.proj-card-thumb{
+  width:100%;aspect-ratio:16/9;
+  background:var(--bg-canvas);
+  display:flex;align-items:center;justify-content:center;
+}
+.proj-card-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+.proj-card-thumb-empty{
+  width:100%;height:100%;
+  background:repeating-linear-gradient(135deg, var(--bg-canvas) 0 10px, var(--bg-panel) 10px 20px);
+  opacity:.4;
+}
+.proj-card-meta{padding:10px 12px;flex:1;min-width:0;}
+.proj-card-name{
+  font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  margin-bottom:4px;
+}
+.proj-card-name-input{
+  width:100%;background:var(--bg-void);border:1px solid var(--accent-dim);border-radius:3px;
+  color:var(--text);font-size:13px;padding:3px 6px;margin-bottom:4px;
+}
+.proj-card-sub{
+  font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;
+}
+.proj-card-menu-btn{
+  position:absolute;top:6px;right:6px;
+  background:rgba(22,21,20,.7);font-size:16px;line-height:1;
+  width:26px;height:26px;
+}
+
+.pcm-overlay{
+  position:fixed;inset:0;z-index:200;background:transparent;
+}
+.pcm-menu{
+  position:fixed;
+  background:var(--bg-panel-raised);border:1px solid var(--line);border-radius:5px;
+  box-shadow:0 6px 20px rgba(0,0,0,.4);
+  padding:4px;z-index:201;
+  display:flex;flex-direction:column;
+}
+.pcm-item{
+  text-align:left;background:none;border:none;border-radius:3px;
+  color:var(--text);font-size:12.5px;padding:7px 10px;cursor:pointer;
+}
+.pcm-item:hover,.pcm-item:focus{background:var(--bg-void);outline:none;}
+.pcm-item.danger{color:var(--bad);}
+
+/* ===== AUTH (login/register) ===== */
+.app-boot-splash{
+  display:flex;align-items:center;justify-content:center;
+  height:100vh;background:var(--bg-void);color:var(--text-dim);font-size:13px;
+}
+.auth-page{
+  display:flex;align-items:center;justify-content:center;
+  height:100vh;background:var(--bg-void);
+}
+.auth-card{
+  display:flex;flex-direction:column;gap:14px;
+  width:340px;padding:28px 26px;
+  background:var(--bg-panel);border:1px solid var(--line);border-radius:6px;
+}
+.auth-title{
+  font-family:'JetBrains Mono','Consolas',monospace;
+  font-weight:700;color:var(--accent);letter-spacing:0.5px;font-size:15px;
+  text-align:center;
+}
+.auth-subtitle{
+  text-align:center;color:var(--text-dim);font-size:13px;margin-top:-6px;
+}
+.auth-field{
+  display:flex;flex-direction:column;gap:2px;
+}
+.auth-input{
+  width:100%;background:var(--bg-void);border:1px solid var(--line);border-radius:3px;
+  color:var(--text);font-size:13px;padding:8px 10px;
+}
+.auth-input:focus{outline:none;border-color:var(--accent-dim);}
+.auth-password-row{
+  display:flex;gap:6px;
+}
+.auth-password-row .auth-input{flex:1;}
+.auth-toggle-password{
+  background:none;border:1px solid var(--line);border-radius:3px;
+  color:var(--text-dim);font-size:11px;padding:0 10px;cursor:pointer;white-space:nowrap;
+}
+.auth-toggle-password:hover{color:var(--text);border-color:var(--accent-dim);}
+.auth-error{
+  color:var(--bad);font-size:11px;margin-top:2px;
+}
+.auth-error-general{
+  margin-top:0;font-size:12px;text-align:center;
+}
+.auth-submit{
+  background:var(--accent);border:1px solid var(--accent-dim);border-radius:4px;
+  color:#1a1400;font-weight:600;font-size:13px;padding:9px 0;cursor:pointer;
+}
+.auth-submit:hover{filter:brightness(1.08);}
+.auth-submit:disabled{opacity:.6;cursor:not-allowed;}
+.auth-switch{
+  text-align:center;color:var(--text-dim);font-size:12px;
+}
+.auth-switch-link{
+  background:none;border:none;color:var(--accent);font-size:12px;
+  cursor:pointer;padding:0;text-decoration:underline;
+}
+.auth-switch-link:hover{color:var(--accent-dim);}
+.pcm-item.danger:hover,.pcm-item.danger:focus{background:rgba(209,69,61,.12);}
+/* ===== Модули в слотах сущности (ModuleSlots.tsx) ===== */
+.mod-cell{cursor:pointer;}
+.mod-cell:hover{border-color:var(--accent);}
+.mod-cell-open{border-color:var(--accent);}
+.mod-cell-invalid{border-color:var(--bad);background:rgba(209,69,61,0.18);}
+.mod-totals{padding:0 14px 12px;font-size:12px;color:var(--text-dim);}
+.mod-totals-empty{font-size:11px;opacity:.7;}
+.mod-total-row{display:flex;justify-content:space-between;gap:12px;max-width:220px;}
+.mod-good{color:var(--ok);}
+.mod-bad{color:var(--bad);}
+.mod-popover{
+  position:fixed;z-index:300;width:264px;max-height:310px;overflow-y:auto;
+  background:var(--bg-panel);border:2px solid #4a4740;border-radius:4px;
+  box-shadow:0 10px 30px rgba(0,0,0,.6);padding:6px;
+}
+.mod-popover-empty{padding:12px;font-size:12px;color:var(--text-dim);text-align:center;}
+.mod-group-title{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);padding:6px 4px 2px;}
+.mod-item{
+  display:flex;align-items:center;gap:8px;width:100%;
+  background:transparent;border:1px solid transparent;border-radius:3px;
+  color:var(--text);padding:3px 6px;font-size:12px;cursor:pointer;text-align:left;
+}
+.mod-item:hover{background:rgba(255,255,255,.06);border-color:var(--line);}
+.mod-item-current{border-color:var(--accent);}
+.mod-item .item-icon{width:30px;height:30px;flex-shrink:0;}
+.mod-item img{width:28px;height:28px;object-fit:contain;}
+.mod-item-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mod-item-tier{font-size:10px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;}
+.mod-remove{
+  display:block;width:100%;margin-top:6px;padding:4px;font-size:12px;
+  background:transparent;border:1px solid var(--line);border-radius:3px;
+  color:var(--bad);cursor:pointer;
+}
+.mod-remove:hover{background:rgba(209,69,61,.12);}
+
+/* ===== Качество (Quality): ItemIcon, QualityRow ===== */
+.item-icon{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:100%;height:100%;border-radius:8px;box-sizing:border-box;
+}
+.item-icon img{max-width:100%;max-height:100%;}
+.quality-name{font-weight:600;}
+.quality-row{display:flex;align-items:center;gap:8px;padding:6px 10px;flex-shrink:0;}
+.quality-row-label{font-size:11px;color:var(--text-dim);white-space:nowrap;}
+.quality-row-tiles{display:flex;gap:4px;}
+.quality-tile{
+  width:30px;height:30px;padding:2px;border-radius:6px;cursor:pointer;
+  background:color-mix(in srgb, var(--q-color) 28%, transparent);
+  border:2px solid transparent;display:flex;align-items:center;justify-content:center;
+}
+.quality-tile img{width:100%;height:100%;object-fit:contain;}
+.quality-tile:hover{border-color:color-mix(in srgb, var(--q-color) 70%, white);}
+.quality-tile.active{border-color:#fff;background:color-mix(in srgb, var(--q-color) 60%, transparent);box-shadow:0 0 6px var(--q-color);}
+.entity-quality{border-top:1px solid var(--line);margin-top:4px;}
+.mod-popover .quality-row{padding:6px 2px 2px;border-top:1px solid var(--line);margin-top:6px;}
+.mm-preview .mm-preview-icon{width:auto;height:64%;aspect-ratio:1;padding:8px;}
+.mm-preview .item-icon img{max-width:100%;max-height:100%;}
+.stat-pop .quality-row{padding:6px 0 0;}
+.item-icon.bp-icon{width:20px;height:20px;border-radius:2px;}
+.item-icon.bp-icon img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated;}
+
+/* ===== Слой плиток (TileLayer.tsx): под сущностями, не ловит мышь ===== */
+.tile-layer{position:absolute;left:0;top:0;pointer-events:none;}
+.tile-ghost{position:absolute;opacity:.65;outline:1px solid rgba(255,255,255,.7);pointer-events:none;z-index:5;}
+.tile-rect{position:absolute;border:2px dashed #fff;background:rgba(255,255,255,.12);pointer-events:none;z-index:5;box-sizing:border-box;}
+.tile-rect.erase{border-color:var(--bad);background:rgba(209,69,61,.18);}
+.tile-rect-label{position:absolute;right:2px;bottom:2px;font-size:10px;color:#fff;background:rgba(0,0,0,.6);padding:0 3px;border-radius:2px;}
+
+/* ===== Глобально: текст интерфейса не выделяется (ни при протяжке мыши за
+   пределы холста, ни случайным кликом). Выделять можно только поля ввода,
+   contenteditable и всё с классом .selectable (например текст ошибок и
+   сводки импорта, который нужно скопировать). ===== */
+*{-webkit-user-select:none;user-select:none;}
+input, textarea, select, [contenteditable=""], [contenteditable="true"],
+.selectable, .selectable *,
+.ie-error, .ie-summary-skip{-webkit-user-select:text;user-select:text;}
+
+/* ===== Раздел «Обновления» главного меню ===== */
+.changelog-modal{width:640px;max-width:calc(100vw - 32px);}
+.changelog-body{padding:12px 16px 16px;overflow-y:auto;flex:1;min-height:0;}
+.changelog-entry{padding:10px 0 12px;border-bottom:1px solid var(--line-soft);}
+.changelog-entry:last-child{border-bottom:none;}
+.changelog-entry-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:6px;}
+.changelog-entry-title{font-size:14px;font-weight:600;color:var(--accent);}
+.changelog-entry-date{font-size:11px;color:var(--text-dim);white-space:nowrap;}
+.changelog-entry ul{margin:0;padding-left:18px;font-size:12px;line-height:1.55;color:var(--text);}
+.changelog-entry li{margin-bottom:3px;}
+.mm-updates-btn{position:relative;}
+.mm-updates-dot{
+  position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;
+  background:var(--accent);
+}
+
+/* ===== Провода (WireLayer.tsx, кнопки инструмента у хотбара) ===== */
+.wire-tool-buttons{display:flex;gap:6px;margin-left:12px;align-self:flex-end;padding-bottom:6px;}
+.wire-tool-btn{
+  width:38px;height:38px;border-radius:6px;cursor:pointer;
+  background:var(--bg-void);border:2px solid var(--line);
+  display:flex;align-items:center;justify-content:center;padding:0;
+}
+.wire-tool-btn:hover{border-color:var(--text-dim);}
+.wire-tool-btn.active.red{border-color:#e0392d;background:rgba(224,57,45,.25);box-shadow:0 0 8px #e0392d;}
+.wire-tool-btn.active.green{border-color:#3dbb4e;background:rgba(61,187,78,.25);box-shadow:0 0 8px #3dbb4e;}
+.wire-tool-dot{width:16px;height:16px;border-radius:50%;border:2px solid #000;}
+.wire-tool-dot.red{background:#e0392d;}
+.wire-tool-dot.green{background:#3dbb4e;}
+.wire-tool-btn img{width:26px;height:26px;object-fit:contain;}
+.entity-combinator-arrow{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  font-size:10px;line-height:1;color:#fff;background:rgba(0,0,0,.55);padding:1px 3px;border-radius:3px;
+  pointer-events:none;white-space:nowrap;
+}
+
+/* ===== Окна настройки комбинаторов (components/circuit) ===== */
+.circuit-overlay{z-index:400;}
+.circuit-modal{width:560px;max-width:calc(100vw - 24px);max-height:86vh;overflow-y:auto;}
+.signal-picker{width:460px;}
+.circ-form{padding:12px 14px 16px;display:flex;flex-direction:column;gap:8px;}
+.circ-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.circ-section-title{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);margin-top:6px;}
+.circ-label{font-size:12px;color:var(--text-dim);}
+.circ-hint{font-size:11px;color:var(--text-dim);}
+.circ-operand{display:inline-flex;align-items:center;gap:6px;}
+.circ-signal-btn{
+  width:40px;height:40px;padding:2px;border-radius:5px;cursor:pointer;
+  background:var(--bg-void);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+}
+.circ-signal-btn:hover{border-color:var(--accent);}
+.circ-signal-btn.set{border-color:#6b675e;}
+.circ-signal-plus{color:var(--text-dim);font-size:18px;}
+.circ-signal-unknown{font-size:9px;color:var(--bad);}
+.circ-num,.circ-select{
+  background:var(--bg-void);border:1px solid var(--line);border-radius:4px;color:var(--text);
+  font-size:12px;padding:6px 6px;
+}
+.circ-select.wide{min-width:260px;}
+.circ-check{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text);cursor:pointer;}
+.circ-networks{display:inline-flex;gap:4px;}
+.circ-net{display:inline-flex;align-items:center;padding:2px 3px;border-radius:3px;}
+.circ-net.red{background:rgba(224,57,45,.28);}
+.circ-net.green{background:rgba(61,187,78,.28);}
+.circ-net input{margin:0;}
+.circ-andor{min-width:46px;}
+.circ-section{border:1px solid var(--line-soft);border-radius:5px;padding:8px;display:flex;flex-direction:column;gap:8px;}
+.circ-grid{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:4px;}
+.circ-slot{position:relative;aspect-ratio:1;background:var(--bg-void);border:1px solid var(--line);border-radius:4px;}
+.circ-slot.set{border-color:#6b675e;}
+.circ-slot-icon{all:unset;position:absolute;inset:2px;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.circ-slot-count{
+  position:absolute;right:1px;bottom:1px;width:90%;text-align:right;font-size:10px;
+  background:rgba(0,0,0,.65);color:#fff;border:none;padding:0 2px;border-radius:2px;
+}
+
+/* ===== Окна настройки схемных сущностей в стиле игры (components/circuit/GameWindow) ===== */
+.gw-window{
+  width:480px;max-width:calc(100vw - 24px);max-height:92vh;overflow-y:auto;
+  background:#38373a;border:2px solid #121212;border-radius:3px;
+  box-shadow:0 14px 44px rgba(0,0,0,.7), inset 0 0 0 1px #5a5a5e;
+  color:#e6e1d6;font-size:13px;
+}
+.gw-window.wide{width:780px;}
+.gw-titlebar{display:flex;align-items:center;gap:10px;padding:8px 10px 6px 12px;}
+.gw-title{font-size:16px;font-weight:700;color:#ffe6c0;white-space:nowrap;}
+.gw-title-drag{
+  flex:1;height:22px;
+  background:repeating-linear-gradient(90deg,#2a292b 0 3px,#3c3b3e 3px 5px);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.6);
+}
+.gw-close{
+  width:28px;height:28px;border-radius:2px;cursor:pointer;
+  background:#a8a39b;color:#1b1b1b;border:1px solid #121212;font-weight:900;font-size:14px;
+  box-shadow:inset 0 1px 0 #d6d1c8;
+}
+.gw-close:hover{background:#d6d1c8;}
+.gw-body{padding:2px 12px 14px;display:flex;flex-direction:column;gap:10px;}
+.gw-status{
+  display:flex;justify-content:space-between;gap:12px;padding:10px 12px;
+  background:#1f1e20;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);
+}
+.gw-status b{color:#ffe6c0;}
+.gw-link.off{color:#d7d3c9;}
+.gw-link.on{display:inline-flex;gap:8px;}
+.gw-net{display:inline-flex;align-items:center;gap:5px;}
+.gw-net::before{content:'';width:9px;height:9px;border-radius:50%;}
+.gw-net.red{color:#ff8f86;}.gw-net.red::before{background:#e0392d;}
+.gw-net.green{color:#8fe39b;}.gw-net.green::before{background:#3dbb4e;}
+.gw-ghost{display:flex;align-items:center;gap:7px;color:#e6e1d6;}
+.gw-ghost i{width:9px;height:9px;border-radius:50%;background:#f2c200;box-shadow:0 0 4px #f2c200;}
+.gw-preview{
+  height:150px;display:flex;align-items:center;justify-content:center;
+  background:
+    repeating-conic-gradient(#3d3d3f 0% 25%, #323234 0% 50%) 0 0 / 52px 52px;
+  box-shadow:inset 0 2px 5px rgba(0,0,0,.7);
+}
+.gw-preview-obj{display:flex;flex-direction:column;align-items:center;gap:2px;}
+.gw-preview-obj .mm-preview-icon{width:64px;height:64px;object-fit:contain;}
+.gw-arrow{width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;}
+.gw-arrow.up{border-bottom:11px solid #f2c200;}
+.gw-arrow.down{border-bottom:11px solid #f2c200;}
+.gw-two{display:flex;gap:18px;align-items:flex-start;}
+.gw-col{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.gw-col.grow{flex:1;}
+.gw-col.side{width:200px;}
+.gw-two > .gw-col:not(.grow):not(.side){flex:1;}
+.gw-label{font-weight:700;color:#ffe6c0;}
+.gw-label.gold{color:#ffbf5c;}
+.gw-text{color:#e6e1d6;}
+.gw-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.gw-operand{display:inline-flex;align-items:center;gap:6px;}
+.gw-rg{display:inline-flex;flex-direction:column;gap:1px;font-size:12px;}
+.gw-rg label{display:flex;align-items:center;gap:4px;cursor:pointer;}
+.gw-rg i{font-style:normal;color:#9d988d;}
+.gw-window input[type=checkbox],.gw-window input[type=radio]{accent-color:#e39827;margin:0;}
+.gw-num{
+  background:#242325;color:#fff;border:1px solid #121212;border-radius:2px;padding:7px 6px;
+  text-align:center;font-size:14px;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);
+}
+.gw-select{
+  appearance:none;background:#a9a59d url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0h10L5 6z' fill='%231b1b1b'/></svg>") no-repeat right 8px center;
+  color:#1b1b1b;font-weight:700;border:1px solid #121212;border-radius:2px;
+  padding:9px 24px 9px 10px;cursor:pointer;font-size:13px;
+  box-shadow:inset 0 1px 0 #d6d1c8;
+}
+.gw-select:hover{background-color:#c2beb5;}
+.gw-select.op{width:78px;font-size:16px;}
+.gw-select.sq{width:62px;font-size:15px;text-align:left;}
+.gw-select.wide{flex:1;}
+.gw-select option{background:#38373a;color:#e6e1d6;}
+.gw-btn{
+  background:#a9a59d;color:#1b1b1b;font-weight:700;border:1px solid #121212;border-radius:2px;
+  padding:8px 14px;cursor:pointer;font-size:13px;box-shadow:inset 0 1px 0 #d6d1c8;
+}
+.gw-btn:hover{background:#c2beb5;}
+.gw-btn.wide{width:100%;}
+.gw-btn.small{padding:6px 8px;min-width:46px;}
+.gw-x{
+  width:22px;height:34px;flex-shrink:0;cursor:pointer;color:#e6e1d6;font-size:11px;
+  background:#2a292b;border:1px solid #121212;border-radius:2px;
+}
+.gw-x:hover{background:#7a2b27;}
+.gw-list{display:flex;flex-direction:column;gap:6px;padding:6px;background:#2a292b;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}
+.gw-cond-row,.gw-out-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.gw-out-modes{display:flex;flex-direction:column;gap:4px;flex:1;}
+.gw-radio{display:inline-flex;align-items:center;gap:6px;cursor:pointer;}
+.gw-subhead{background:#242325;padding:8px 10px;font-weight:700;color:#e6e1d6;}
+.gw-info{display:inline-block;width:14px;height:14px;border-radius:50%;background:#4aa3d8;color:#fff;font-size:10px;text-align:center;line-height:14px;font-style:normal;}
+.gw-sig-panel{
+  display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:2px;padding:4px;
+  background:#1f1e20;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);min-height:calc(var(--rows,1) * 36px + 8px);
+}
+.gw-sig-cell{position:relative;aspect-ratio:1;background:#2c2b2d;border:1px solid #1a191b;display:flex;align-items:center;justify-content:center;}
+.gw-sig-cell.filled.red{background:#7a2b27;}
+.gw-sig-cell.filled.green{background:#2a6a33;}
+.gw-sig-cell.filled.plain{background:#4a494c;}
+.gw-sig-count{position:absolute;right:1px;bottom:0;font-size:10px;font-weight:700;text-shadow:0 0 2px #000;}
+.gw-footer{border-top:1px solid #1f1e20;padding-top:10px;}
+.gw-desc{width:100%;box-sizing:border-box;background:#242325;color:#e6e1d6;border:1px solid #121212;padding:6px;font:inherit;resize:vertical;}
+.gw-hint{font-size:11px;color:#9d988d;}
+.gw-hint.block{font-size:13px;color:#e6e1d6;}
+.gw-sep{border-top:1px solid #1f1e20;}
+.gw-mode-row{display:flex;align-items:center;gap:12px;}
+.gw-toggle-row{display:flex;align-items:center;gap:10px;}
+.gw-toggle-row span.on{color:#ffbf5c;font-weight:700;}
+.gw-switch{
+  width:42px;height:20px;border-radius:10px;background:#242325;border:1px solid #121212;position:relative;cursor:pointer;padding:0;
+  box-shadow:inset 0 1px 3px rgba(0,0,0,.7);
+}
+.gw-switch::after{content:'';position:absolute;top:2px;left:3px;width:14px;height:14px;border-radius:50%;background:#a9a59d;transition:left .12s;}
+.gw-switch.on::after{left:23px;}
+.gw-section{display:flex;flex-direction:column;gap:4px;background:#2a292b;padding:4px;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}
+.gw-section-head{display:flex;align-items:center;gap:8px;}
+.gw-section-name{color:#ffbf5c;font-weight:700;}
+.gw-name-input{background:#242325;color:#fff;border:1px solid #121212;padding:3px 6px;}
+.gw-pencil{background:#a9a59d;color:#1b1b1b;border:1px solid #121212;width:22px;height:22px;cursor:pointer;font-size:12px;}
+.gw-stripes{flex:1;height:22px;background:repeating-linear-gradient(90deg,#242325 0 3px,#323134 3px 5px);}
+.gw-mult{display:inline-flex;align-items:center;gap:3px;color:#9d988d;}
+.gw-trash{background:#d1453d;border:1px solid #121212;width:32px;height:30px;cursor:pointer;}
+.gw-grid{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:2px;}
+.gw-cell{position:relative;aspect-ratio:1;background:#1f1e20;border:1px solid #121212;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}
+.gw-cell.set{background:#3a393c;}
+.gw-cell-icon{all:unset;position:absolute;inset:2px;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.gw-cell-count{
+  position:absolute;right:1px;bottom:1px;width:92%;text-align:right;font-size:10px;font-weight:700;
+  background:rgba(0,0,0,.7);color:#fff;border:none;padding:0 2px;border-radius:2px;
+}
+/* кнопка выбора сигнала в стиле игры */
+.circ-signal-btn{background:#2a292b;border:1px solid #121212;border-radius:2px;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);width:42px;height:42px;}
+.circ-signal-btn:hover{border-color:#e39827;}
+.circ-signal-btn.set{border-color:#121212;background:#3a393c;}
+
+/* ===== Симуляция схем (components/circuit/SimPanel, SimNets) ===== */
+.sim-btn-wrap{position:relative;display:inline-flex;}
+.sim-panel{
+  position:absolute;top:calc(100% + 8px);right:0;z-index:300;width:330px;padding:12px;
+  background:var(--bg-panel);border:2px solid #4a4740;border-radius:4px;
+  box-shadow:0 12px 40px rgba(0,0,0,.6);display:flex;flex-direction:column;gap:10px;
+}
+.sim-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.sim-label{font-size:12px;color:var(--text-dim);min-width:56px;}
+.sim-tick{font-variant-numeric:tabular-nums;font-weight:700;color:var(--accent);}
+.sim-changed{font-size:11px;color:#f2c200;margin-left:6px;animation:simflash .6s ease-in-out 3;}
+@keyframes simflash{50%{opacity:.35}}
+.sim-hint{font-size:11px;color:var(--text-dim);}
+.select-tool-btn.small{padding:4px 7px;font-size:11px;}
+.sim-pop{
+  position:fixed;z-index:2000;min-width:200px;max-width:250px;padding:8px 10px;
+  background:#262528;border:2px solid #121212;border-radius:3px;box-shadow:0 8px 24px rgba(0,0,0,.6);
+  color:#e6e1d6;font-size:12px;pointer-events:auto;
+}
+.sim-pop.red{border-color:#7a2b27;}.sim-pop.green{border-color:#2a6a33;}
+.sim-pop-title{display:flex;align-items:center;gap:6px;font-weight:700;margin-bottom:6px;color:#ffe6c0;}
+.sim-pop-title.small{margin-bottom:3px;font-size:11px;}
+.sim-pop-close{margin-left:auto;background:none;border:none;color:#e6e1d6;cursor:pointer;}
+.sim-dot{width:9px;height:9px;border-radius:50%;display:inline-block;}
+.sim-dot.red{background:#e0392d;}.sim-dot.green{background:#3dbb4e;}
+.sim-conn{margin-left:auto;font-weight:400;color:#9d988d;}
+.sim-val-list{display:flex;flex-direction:column;gap:2px;max-height:260px;overflow-y:auto;}
+.sim-val-row{display:flex;align-items:center;gap:6px;}
+.sim-val-row img,.sim-val-row .item-icon{width:20px;height:20px;}
+.sim-val-fallback{width:20px;font-size:9px;color:var(--bad);}
+.sim-val-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sim-val-num{font-variant-numeric:tabular-nums;font-weight:700;}
+.sim-val-empty{color:#9d988d;font-size:11px;}
+.sim-nets-block{margin-top:8px;padding-top:6px;border-top:1px solid #1f1e20;display:flex;flex-direction:column;gap:6px;}
+.sim-nets-title{font-weight:700;color:#ffe6c0;font-size:11px;text-transform:uppercase;letter-spacing:.05em;}
+.sim-mini{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.sim-mini-tick{margin-left:auto;font-size:12px;color:#9d988d;font-variant-numeric:tabular-nums;}
+.gw-btn:disabled{opacity:.5;cursor:default;}
+
+/* ===== Окно настроек сущностей (components/entitySettings) ===== */
+.es-body{display:flex;flex-direction:column;gap:8px;}
+.es-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid #2d2c2f;}
+.es-row.disabled{opacity:.5;}
+.es-label{flex:1;color:#e6e1d6;}
+.es-control{display:inline-flex;align-items:center;gap:8px;max-width:60%;}
+.es-muted{color:#9d988d;font-size:12px;}
+.es-text{width:200px;}
+.es-slots{display:grid;grid-template-columns:repeat(5,40px);gap:3px;}
+.es-slot{width:40px;height:40px;aspect-ratio:auto;}
+.es-slot-x{position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;border:none;background:#d1453d;color:#fff;font-size:9px;cursor:pointer;line-height:1;display:none;}
+.es-slot:hover .es-slot-x{display:block;}
+.es-color{display:inline-flex;align-items:center;gap:6px;}
+.es-color input[type=color]{width:42px;height:28px;padding:0;border:1px solid #121212;background:none;cursor:pointer;}
+.es-color input.unset{opacity:.45;}
+.es-stubs{margin-top:6px;color:#9d988d;font-size:12px;}
+.es-stubs summary{cursor:pointer;margin-bottom:4px;}
+.es-open-btn{
+  position:absolute;z-index:3000000;padding:3px 8px;font-size:11px;font-weight:700;cursor:pointer;
+  background:#a9a59d;color:#1b1b1b;border:1px solid #121212;border-radius:2px;white-space:nowrap;
+}
+.es-open-btn:hover{background:#c2beb5;}
+.es-panel-btn{margin:10px 14px 14px;}
+.es-lrow{padding:8px 0;border-top:1px solid #1f1e20;}
+.es-lrow:first-of-type{border-top:none;}
+.es-lrow.cols{display:flex;gap:16px;align-items:center;justify-content:space-between;}
+.es-lcol{flex:1;min-width:0;}
+.es-lcol.stack{display:flex;flex-direction:column;gap:8px;}
+.es-lcol:last-child:not(:first-child){flex:0 0 auto;}
+.es-lf{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.es-lf.stack{flex-direction:column;align-items:flex-start;}
+.es-label-inline{color:#e6e1d6;display:inline-flex;align-items:center;gap:6px;}
+.es-check{display:inline-flex;align-items:center;gap:8px;color:#e6e1d6;cursor:pointer;}
+.es-check.dim{opacity:.5;}
+.es-check-box{display:inline-flex;}
+.es-inline{display:inline-flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.es-radios{display:inline-flex;gap:14px;flex-wrap:wrap;}
+.es-switch2{display:inline-flex;align-items:center;gap:8px;color:#9d988d;}
+.es-switch2 .active{color:#ffbf5c;font-weight:700;}
+.es-switch2.off{opacity:.5;}
+.es-slider{width:100%;flex-wrap:nowrap;gap:10px;}
+.es-range{flex:1;min-width:120px;accent-color:#e39827;}
+.es-num-box{width:62px;}
+.es-textarea-wrap{position:relative;width:100%;}
+.es-textarea{width:100%;box-sizing:border-box;min-height:160px;background:#7f7f7f;color:#fff;border:2px solid #121212;padding:8px;font:inherit;resize:vertical;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}
+.es-confirm{position:absolute;right:6px;bottom:6px;width:32px;height:28px;background:#5cc65c;color:#10300f;border:1px solid #121212;font-weight:900;cursor:pointer;}
+.es-lf > .es-color{margin-left:auto;}
+.es-switch2 span{white-space:nowrap;}
+
+/* ======================================================================
+   ЕДИНЫЙ СТИЛЬ ОКОН (как окна игры): рамка, заголовок с рифлёной полосой,
+   серые кнопки, утопленные панели. Перекрывает прежние стили окон:
+   .machine-modal (панели сущностей), .picker-modal (выбор предметов,
+   сигналов, рецептов, диалоги), всплывающие панели. Окна комбинаторов и
+   настроек (.gw-window) задают те же значения — держать в синхроне.
+   ====================================================================== */.theme-game .machine-modal, .theme-game .picker-modal, .theme-game .settings-panel, .theme-game .sim-panel{
+  background:#38373a;border:2px solid #121212;border-radius:3px;
+  box-shadow:0 14px 44px rgba(0,0,0,.7), inset 0 0 0 1px #5a5a5e;
+  color:#e6e1d6;
+}.theme-game .picker-modal{overflow:hidden;}.theme-game .settings-panel, .theme-game .sim-panel{padding:10px 12px;}.theme-game .settings-panel-title{color:#ffe6c0;font-size:14px;font-weight:700;text-transform:none;letter-spacing:0;padding:0 0 8px;}
+
+/* заголовок окна */.theme-game .mm-titlebar, .theme-game .gm-header{
+  display:flex;align-items:center;gap:10px;
+  background:none;border-bottom:none;padding:8px 10px 6px 12px;
+}.theme-game .mm-titlebar::before, .theme-game .gm-header::before{
+  content:'';order:1;flex:1;height:22px;
+  background:repeating-linear-gradient(90deg,#2a292b 0 3px,#3c3b3e 3px 5px);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.6);
+}.theme-game .mm-titlebar-name, .theme-game .gm-title, .theme-game .mm-titlebar .entity-title, .theme-game .mm-titlebar > :first-child:not(.mm-titlebar-actions){
+  order:0;flex:0 0 auto;font-size:16px;font-weight:700;color:#ffe6c0;white-space:nowrap;
+}.theme-game .gm-title{flex:0 0 auto;}.theme-game .mm-titlebar-actions, .theme-game .gm-header > .gm-icon-btn, .theme-game .gm-header > .ie-btn{order:2;}.theme-game .mm-titlebar-actions{gap:4px;margin-left:0;}
+
+/* серые кнопки окна */.theme-game .mm-icon-btn, .theme-game .mm-close-btn, .theme-game .gm-icon-btn{
+  width:28px;height:28px;border-radius:2px;cursor:pointer;
+  background:#a9a59d;color:#1b1b1b;border:1px solid #121212;font-weight:900;font-size:13px;
+  box-shadow:inset 0 1px 0 #d6d1c8;display:flex;align-items:center;justify-content:center;padding:0;
+}.theme-game .mm-icon-btn:hover, .theme-game .mm-close-btn:hover, .theme-game .gm-icon-btn:hover{background:#d6d1c8;color:#1b1b1b;border-color:#121212;}.theme-game .machine-modal .ie-btn, .theme-game .picker-modal .ie-btn, .theme-game .settings-panel .ie-btn, .theme-game .sim-panel .ie-btn, .theme-game .machine-modal .picker-clear, .theme-game .picker-modal .picker-clear{
+  background:#a9a59d;color:#1b1b1b;font-weight:700;border:1px solid #121212;border-radius:2px;
+  box-shadow:inset 0 1px 0 #d6d1c8;
+}.theme-game .machine-modal .ie-btn:hover, .theme-game .picker-modal .ie-btn:hover, .theme-game .settings-panel .ie-btn:hover, .theme-game .sim-panel .ie-btn:hover, .theme-game .machine-modal .picker-clear:hover, .theme-game .picker-modal .picker-clear:hover{background:#c2beb5;border-color:#121212;color:#1b1b1b;}.theme-game .machine-modal .ie-btn.primary, .theme-game .picker-modal .ie-btn.primary{background:var(--accent);color:#1a1400;}.theme-game .machine-modal .ie-btn.danger, .theme-game .picker-modal .ie-btn.danger{background:var(--bad);color:#1a0400;}.theme-game .sim-panel .select-tool-btn{background:#a9a59d;color:#1b1b1b;border:1px solid #121212;border-radius:2px;font-weight:700;box-shadow:inset 0 1px 0 #d6d1c8;}.theme-game .sim-panel .select-tool-btn:hover{background:#c2beb5;color:#1b1b1b;}.theme-game .sim-panel .select-tool-btn.active{background:var(--accent);color:#1a1400;}
+
+/* статусные строки и превью */.theme-game .mm-warning, .theme-game .ins-status-ok, .theme-game .ins-status-waiting{
+  background:#1f1e20;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);border-bottom:none;
+  margin:0 12px 8px;padding:8px 12px;color:#e6e1d6;
+}.theme-game .mm-preview{
+  margin:0 12px 8px;width:auto;height:170px;
+  background:repeating-conic-gradient(#3d3d3f 0% 25%, #323234 0% 50%) 0 0 / 52px 52px;
+  box-shadow:inset 0 2px 5px rgba(0,0,0,.7);
+}
+
+/* утопленные панели, поля, слоты */.theme-game .mm-slot, .theme-game .gm-cell, .theme-game .gm-search-input, .theme-game .ie-textarea, .theme-game .ie-summary{
+  background:#1f1e20;border:1px solid #121212;border-radius:2px;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);color:#e6e1d6;
+}.theme-game .gm-cell:hover{background:#2c2b2d;border-color:#e39827;}.theme-game .gm-cell.active{border-color:#e39827;box-shadow:inset 0 0 0 1px #e39827;}.theme-game .gm-search-row{border-bottom:none;padding:2px 12px 8px;}.theme-game .gm-categories{background:#2a292b;border-bottom:none;margin:0 12px;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}.theme-game .gm-cat-cell{background:#3a393c;border-color:#121212;border-radius:2px;}.theme-game .gm-body{background:#2a292b;margin:8px 12px 12px;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}.theme-game .ie-body{padding:8px 14px 12px;}.theme-game .ie-footer{border-top:1px solid #1f1e20;}.theme-game .mm-progress-track{background:#1f1e20;border:1px solid #121212;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}.theme-game .machine-modal input[type=checkbox], .theme-game .picker-modal input[type=checkbox], .theme-game .machine-modal input[type=radio], .theme-game .picker-modal input[type=radio]{accent-color:#e39827;}.theme-game .machine-modal select, .theme-game .picker-modal select, .theme-game .sim-panel select{
+  background:#a9a59d;color:#1b1b1b;font-weight:700;border:1px solid #121212;border-radius:2px;padding:6px 8px;
+}
+
+/* всплывающие панели рядом с сущностями */.theme-game .stat-pop, .theme-game .group-stats-panel{
+  background:#38373a;border:2px solid #121212;border-radius:3px;
+  box-shadow:0 8px 24px rgba(0,0,0,.6), inset 0 0 0 1px #5a5a5e;color:#e6e1d6;
+}.theme-game .stat-pop .arrow{background:#38373a;border-right:2px solid #121212;border-bottom:2px solid #121212;}.theme-game .group-stats-panel .gsp-head{color:#ffe6c0;border-bottom:1px solid #1f1e20;font-weight:700;}
+
+
+/* ======================================================================
+   ЕДИНЫЙ СТИЛЬ — ОСТАЛЬНОЙ ИНТЕРФЕЙС (верхняя панель, списки, вкладки,
+   хотбар, баланс, главное меню, вход). Цвета берутся из styles/theme.css.
+   ====================================================================== */
+/* кнопки: светло-серые, тёмный текст, как в игре */.theme-game .select-tool-btn, .theme-game .ie-btn, .theme-game .tab-add, .theme-game .auth-toggle-password, .theme-game .mm-recipe-change-btn, .theme-game .picker-clear{
+  background:var(--btn-bg);color:var(--btn-text);font-weight:700;
+  border:1px solid var(--line);border-radius:2px;box-shadow:inset 0 1px 0 var(--btn-hi);
+}.theme-game .select-tool-btn:hover, .theme-game .ie-btn:hover, .theme-game .tab-add:hover, .theme-game .auth-toggle-password:hover, .theme-game .mm-recipe-change-btn:hover, .theme-game .picker-clear:hover{
+  background:var(--btn-bg-hover);color:var(--btn-text);border-color:var(--line);
+}.theme-game .select-tool-btn:disabled:hover{background:var(--btn-bg);color:var(--btn-text);border-color:var(--line);}.theme-game .select-tool-btn.active, .theme-game .ie-btn.primary{background:var(--accent);color:#1a1400;border-color:var(--line);}.theme-game .ie-btn.danger{background:var(--bad);color:#fff;}.theme-game .mm-logout-btn, .theme-game .gm-icon-btn.plain{color:var(--text-dim);}
+
+/* верхняя панель, левый список, правая палитра */.theme-game .topbar{background:var(--bg-panel);border-bottom:2px solid var(--line);box-shadow:inset 0 -1px 0 #5a5a5e;}.theme-game .topbar .logo, .theme-game .mm-logo, .theme-game .auth-title{color:var(--title);}.theme-game .factory-list{border-right:2px solid var(--line);box-shadow:inset -1px 0 0 #5a5a5e;}.theme-game .factory-sidebar{border-left:2px solid var(--line);box-shadow:inset 1px 0 0 #5a5a5e;background:var(--bg-panel);}.theme-game .fl-header{border-bottom:none;padding-bottom:6px;}.theme-game .fl-title{color:var(--title);font-size:14px;font-weight:700;text-transform:none;letter-spacing:0;}.theme-game .fl-search, .theme-game .mm-search, .theme-game .auth-input, .theme-game .proj-card-name-input{
+  background:var(--bg-void);border:1px solid var(--line);border-radius:2px;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);color:var(--text);
+}.theme-game .fl-body{background:var(--bg-void);margin:0 8px 8px;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}.theme-game .fl-folder{color:var(--title);font-weight:700;}.theme-game .fl-item{border-radius:2px;}.theme-game .fl-item:hover{background:var(--bg-panel-raised);}.theme-game .fl-item.active{background:var(--bg-panel-raised);border-color:var(--accent);}.theme-game .collapse-tab, .theme-game .sidebar-collapse-tab{
+  background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--line);box-shadow:inset 0 1px 0 var(--btn-hi);font-weight:900;
+}.theme-game .collapse-tab:hover, .theme-game .sidebar-collapse-tab:hover{background:var(--btn-bg-hover);color:var(--btn-text);}
+
+/* вкладки */.theme-game .tabs-bar{background:var(--bg-panel);border-bottom:2px solid var(--line);box-shadow:inset 0 -1px 0 #5a5a5e;}.theme-game .tab-item{background:var(--bg-void);border:1px solid var(--line);border-bottom:none;border-radius:2px 2px 0 0;box-shadow:inset 0 1px 3px rgba(0,0,0,.6);}.theme-game .tab-item.active{background:var(--bg-panel-raised);color:var(--title);font-weight:700;box-shadow:inset 0 1px 0 #6a696e;}.theme-game .tab-add{padding:3px 9px;}
+
+/* плавающие панели на холсте */.theme-game .balance-panel, .theme-game .hotbar-wrap, .theme-game .hotbar-expanded{
+  background:var(--bg-panel);border:2px solid var(--line);border-radius:3px;
+  box-shadow:0 8px 24px rgba(0,0,0,.6), inset 0 0 0 1px #5a5a5e;
+}.theme-game .hotbar-wrap{border-radius:3px 3px 0 0;}.theme-game .bp-head{border-bottom:none;}.theme-game .bp-head span{color:var(--title);font-size:13px;font-weight:700;text-transform:none;letter-spacing:0;}.theme-game .bp-target{background:var(--bg-void);box-shadow:inset 0 1px 3px rgba(0,0,0,.7);border-radius:2px;}.theme-game .hb-slot{background:var(--bg-void);border:1px solid var(--line);border-radius:2px;box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}.theme-game .hb-slot:hover{border-color:var(--accent);}.theme-game .hotbar-row-label{color:var(--text-dim);}.theme-game .wire-tool-btn{background:var(--bg-panel);border:2px solid var(--line);border-radius:3px;box-shadow:inset 0 0 0 1px #5a5a5e;}
+
+/* главное меню */.theme-game .mm-header{background:var(--bg-panel);border-bottom:2px solid var(--line);box-shadow:inset 0 -1px 0 #5a5a5e;}.theme-game .main-menu{background:var(--bg-canvas);}.theme-game .proj-card, .theme-game .pcm-menu{
+  background:var(--bg-panel);border:2px solid var(--line);border-radius:3px;
+  box-shadow:0 6px 18px rgba(0,0,0,.5), inset 0 0 0 1px #5a5a5e;
+}.theme-game .proj-card:hover{border-color:var(--accent);}.theme-game .proj-card-thumb{background:var(--bg-void);box-shadow:inset 0 1px 3px rgba(0,0,0,.7);}.theme-game .proj-card-name{color:var(--title);font-weight:700;}.theme-game .proj-card-create{background:var(--bg-panel);border:2px dashed #5a5a5e;border-radius:3px;}.theme-game .proj-card-create:hover{border-color:var(--accent);}.theme-game .proj-card-menu-btn{background:var(--btn-bg);color:var(--btn-text);border:1px solid var(--line);border-radius:2px;}.theme-game .pcm-item:hover, .theme-game .pcm-item:focus{background:var(--bg-void);}
+
+/* вход и регистрация */.theme-game .auth-page, .theme-game .app-boot-splash{background:var(--bg-canvas);}.theme-game .auth-card{
+  background:var(--bg-panel);border:2px solid var(--line);border-radius:3px;
+  box-shadow:0 14px 44px rgba(0,0,0,.7), inset 0 0 0 1px #5a5a5e;
+}.theme-game .auth-title{font-size:18px;}.theme-game .auth-submit{background:var(--accent);color:#1a1400;border:1px solid var(--line);border-radius:2px;box-shadow:inset 0 1px 0 rgba(255,255,255,.35);}.theme-game .settings-panel-overlay, .theme-game .pcm-overlay{background:transparent;}
+
+/* палитра сущностей всегда открыта; на узких окнах не занимает больше 45% ширины */
+.factory-sidebar{max-width:45vw;}

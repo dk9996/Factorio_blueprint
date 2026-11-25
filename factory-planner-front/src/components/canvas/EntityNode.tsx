@@ -13,6 +13,11 @@ import { computeIoHints, type IoHintPrimitive, type NetworkRenderInfo } from '..
 import { IoHints } from './IoHints'
 import { useNetworksStore } from '../../store/networksStore'
 
+// Комбинаторы с входом/выходом (у constant-combinator их нет) — в режиме-заглушке
+// показываем стрелку потока «вход -> выход» по направлению сущности.
+const COMBINATOR_TYPES = new Set(['arithmetic-combinator', 'decider-combinator', 'selector-combinator'])
+const COMBINATOR_ARROW: Record<number, string> = { 0: '↑', 90: '→', 180: '↓', 270: '←' }
+
 const EMPTY_ENTITIES: PlacedEntity[] = []
 const EMPTY_CATALOG: CatalogEntity[] = []
 const EMPTY_RECIPES: Recipe[] = []
@@ -478,6 +483,11 @@ export function EntityNode({ entity, selected, onSelect }: Props) {
             className="entity-simple-icon"
           />
           {!isPipeLike && showDirectionArrow && <div className={`entity-direction-arrow dir-${entity.direction ?? 0}`} />}
+          {COMBINATOR_TYPES.has(entity.type ?? '') && (
+            <div className="entity-combinator-arrow" title="Вход → выход">
+              вх {COMBINATOR_ARROW[entity.direction ?? 0]} вых
+            </div>
+          )}
           <IoHints width={entity.width} height={entity.height} hints={ioHintPrimitives} />
         </>
       ) : isAnimated ? (

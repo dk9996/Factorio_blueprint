@@ -11,6 +11,10 @@ export function SettingsPanel({ onClose }: Props) {
   const toggleIoHints = useUiStore((s) => s.toggleIoHints)
   const showDirectionArrow = useUiStore((s) => s.showDirectionArrow)
   const toggleDirectionArrow = useUiStore((s) => s.toggleDirectionArrow)
+  const showTileLayer = useUiStore((s) => s.showTileLayer)
+  const toggleTileLayer = useUiStore((s) => s.toggleTileLayer)
+  const showWireLayer = useUiStore((s) => s.showWireLayer)
+  const toggleWireLayer = useUiStore((s) => s.toggleWireLayer)
 
   return (
     <div className="settings-panel-overlay" onClick={onClose}>
@@ -23,6 +27,14 @@ export function SettingsPanel({ onClose }: Props) {
         <label className="ins-checkbox-row">
           <input type="checkbox" checked={showIoHints} onChange={toggleIoHints} />
           Подсказки входов/выходов
+        </label>
+        <label className="ins-checkbox-row">
+          <input type="checkbox" checked={showTileLayer} onChange={toggleTileLayer} />
+          Слой плиток
+        </label>
+        <label className="ins-checkbox-row">
+          <input type="checkbox" checked={showWireLayer} onChange={toggleWireLayer} />
+          Слой проводов
         </label>
         <label className="ins-checkbox-row">
           <input type="checkbox" checked={showDirectionArrow} onChange={toggleDirectionArrow} />

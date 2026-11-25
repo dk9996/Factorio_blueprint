@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 import { entitiesApi } from '../lib/api/entities'
 import { resolveAssetUrl } from '../lib/api/client'
+import type { ModuleDef } from '../lib/modules'
+import type { QualityDef } from '../lib/quality'
+import type { TileDef } from '../lib/tiles'
+import { EMPTY_SIGNALS, type SignalCatalog } from '../lib/circuit/signals'
 
 export interface PipeSpriteVariant {
   url: string
@@ -124,6 +128,13 @@ export interface CatalogEntity {
   height: number
   craftingCategories: string[] | null
   moduleSlots: number
+  // Какие эффекты/категории модулей сущность принимает (lib/modules.ts).
+  allowedEffects: string[]
+  allowedModuleCategories: string[] | null
+  // Схемная сеть: коннекторы проводов по направлениям Factorio (0|4|8|12;
+  // точки в тайлах от центра сущности) или null, и макс. длина провода (тайлы).
+  connectors: Record<string, { id: string; kind: 'single' | 'input' | 'output'; red: [number, number]; green: [number, number] }[]> | null
+  circuitWireMaxDistance: number | null
   craftingSpeed: number | null
   miningSpeed: number | null
   researchingSpeed: number | null
@@ -132,6 +143,10 @@ export interface CatalogEntity {
   speed: number | null
   rocketPartsRequired: number | null
   filterCount: number
+  // слоты инвентаря (контейнеры/вагоны/хабы) или null
+  inventorySize?: number | null
+  // инструменты и звуки программируемой колонки (порядок = id в чертеже)
+  speakerInstruments?: { name: string; label: string; notes: { name: string; label: string }[] }[] | null
   bulkInserterConfig: boolean
   logisticRadius: number | null
   constructionRadius: number | null
@@ -148,9 +163,21 @@ export interface CatalogEntity {
 
 interface EntityCatalogStore {
   entities: CatalogEntity[]
+  // Модули профиля (выбор в слотах сущностей, lib/modules.ts).
+  modules: ModuleDef[]
+  // Качества профиля; пустой массив = у профиля нет качества (UI скрыт).
+  qualities: QualityDef[]
+  // Плитки профиля (слой под сущностями, lib/tiles.ts).
+  tiles: TileDef[]
+  // Сигналы для окна выбора сигнала комбинаторов (lib/circuit/signals.ts)
+  signals: SignalCatalog
   loading: boolean
   error: string | null
-  fetchEntities: () => Promise<void>
+  // Профиль, которым сейчас реально заполнен entities — см.
+  // lib/projects/projectSession.ts:openProjectInEditor, которая решает,
+  // нужен ли рефетч, сравнивая это поле с проектным content_profile.
+  activeProfile: string | null
+  fetchEntities: (profile?: string) => Promise<void>
   rebuildCatalog: (forceRedump?: boolean) => Promise<void>
 }
 
@@ -195,16 +222,44 @@ function withResolvedIcons(entities: CatalogEntity[]): CatalogEntity[] {
   }))
 }
 
-export const useEntityCatalogStore = create<EntityCatalogStore>((set) => ({
+export const useEntityCatalogStore = create<EntityCatalogStore>((set, get) => ({
   entities: [],
+  modules: [],
+  qualities: [],
+  tiles: [],
+  signals: EMPTY_SIGNALS,
   loading: false,
   error: null,
+  activeProfile: null,
 
-  fetchEntities: async () => {
+  fetchEntities: async (profile = 'base') => {
     set({ loading: true, error: null })
     try {
-      const entities = await entitiesApi.list()
-      set({ entities: withResolvedIcons(entities), loading: false })
+      const [entities, modules, qualities, tiles, signals] = await Promise.all([
+        entitiesApi.list(profile),
+        entitiesApi.modules(profile),
+        entitiesApi.qualities(profile),
+        entitiesApi.tiles(profile),
+        entitiesApi.signals(profile),
+      ])
+      set({
+        entities: withResolvedIcons(entities),
+        modules: modules.map((m) => ({ ...m, icon: m.icon ? resolveAssetUrl(m.icon) : null })),
+        qualities: qualities.map((q) => ({ ...q, icon: q.icon ? resolveAssetUrl(q.icon) : null })),
+        signals: {
+          groups: signals.groups.map((g) => ({ ...g, icon: g.icon ? resolveAssetUrl(g.icon) : null })),
+          signals: signals.signals.map((x) => ({ ...x, icon: x.icon ? resolveAssetUrl(x.icon) : null })),
+        },
+        tiles: tiles.map((t) => ({
+          ...t,
+          icon: t.icon ? resolveAssetUrl(t.icon) : null,
+          textureVariants: t.textureVariants
+            ? { ...t.textureVariants, urls: t.textureVariants.urls.map(resolveAssetUrl) }
+            : null,
+        })),
+        loading: false,
+        activeProfile: profile,
+      })
     } catch (err) {
       set({
         loading: false,
@@ -214,11 +269,35 @@ export const useEntityCatalogStore = create<EntityCatalogStore>((set) => ({
   },
 
   rebuildCatalog: async (forceRedump = false) => {
+    const profile = get().activeProfile ?? 'base'
     set({ loading: true, error: null })
     try {
-      await entitiesApi.rebuild(forceRedump)
-      const entities = await entitiesApi.list()
-      set({ entities: withResolvedIcons(entities), loading: false })
+      await entitiesApi.rebuild(profile, forceRedump)
+      const [entities, modules, qualities, tiles, signals] = await Promise.all([
+        entitiesApi.list(profile),
+        entitiesApi.modules(profile),
+        entitiesApi.qualities(profile),
+        entitiesApi.tiles(profile),
+        entitiesApi.signals(profile),
+      ])
+      set({
+        entities: withResolvedIcons(entities),
+        modules: modules.map((m) => ({ ...m, icon: m.icon ? resolveAssetUrl(m.icon) : null })),
+        qualities: qualities.map((q) => ({ ...q, icon: q.icon ? resolveAssetUrl(q.icon) : null })),
+        signals: {
+          groups: signals.groups.map((g) => ({ ...g, icon: g.icon ? resolveAssetUrl(g.icon) : null })),
+          signals: signals.signals.map((x) => ({ ...x, icon: x.icon ? resolveAssetUrl(x.icon) : null })),
+        },
+        tiles: tiles.map((t) => ({
+          ...t,
+          icon: t.icon ? resolveAssetUrl(t.icon) : null,
+          textureVariants: t.textureVariants
+            ? { ...t.textureVariants, urls: t.textureVariants.urls.map(resolveAssetUrl) }
+            : null,
+        })),
+        loading: false,
+        activeProfile: profile,
+      })
     } catch (err) {
       set({
         loading: false,

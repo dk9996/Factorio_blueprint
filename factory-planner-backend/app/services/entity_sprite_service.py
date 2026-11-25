@@ -1,7 +1,11 @@
 import json
-from pathlib import Path
 
-ENTITY_SPRITES_CACHE_PATH = Path("data/cache/entity_sprites.json")
+from app.content.paths import (
+    directional_sprite_map_path,
+    entity_sprite_map_path,
+    fluid_overlay_map_path,
+    pipe_sprite_map_path,
+)
 
 # Известные "главные" поля графики, проверенные на ключевых ванильных
 # типах. Порядок важен — проверяются по очереди, первое найденное
@@ -786,9 +790,25 @@ def build_entity_sprite_map(raw: dict, entity_names: set[str]) -> dict[str, list
     (чтобы не тратить время на прочие 10000+ прототипов, которых нет
     в нашем каталоге сущностей). Значение для каждой сущности — список
     слоёв (обычно 1, иногда больше).
-    """
-    result: dict[str, list[dict]] = {}
 
+    ОБЩЕЕ (не по-профильное) хранилище — см. app/content/paths.py: геометрия
+    спрайта одной и той же сущности не зависит от того, каким профилем
+    получен дамп, поэтому карта MERGE-WRITE (читаем уже накопленное,
+    добавляем найденное в ЭТОМ дампе, пишем обратно) — сборка профиля B
+    после A дополняет хранилище, а не затирает то, что A уже нашла. При
+    конфликте (теоретически маловероятном) побеждают свежие данные этого
+    дампа. Возвращает ПОЛНУЮ объединённую карту (не только найденное в этом
+    дампе) — см. build_entity_catalog's "sprites_extracted" в сводке.
+    """
+    cache_path = entity_sprite_map_path()
+    existing: dict[str, list[dict]] = {}
+    if cache_path.exists():
+        try:
+            existing = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+
+    newly_found: dict[str, list[dict]] = {}
     for section_name, section in raw.items():
         if not isinstance(section, dict):
             continue
@@ -797,23 +817,24 @@ def build_entity_sprite_map(raw: dict, entity_names: set[str]) -> dict[str, list
                 continue
             layers = extract_sprite_layers(proto)
             if layers:
-                result[name] = layers
+                newly_found[name] = layers
 
-    ENTITY_SPRITES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(ENTITY_SPRITES_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+    merged = {**existing, **newly_found}
 
-    return result
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, ensure_ascii=False, indent=2)
+
+    return merged
 
 
 def get_entity_sprite_map() -> dict[str, dict]:
-    if not ENTITY_SPRITES_CACHE_PATH.exists():
+    cache_path = entity_sprite_map_path()
+    if not cache_path.exists():
         return {}
-    with open(ENTITY_SPRITES_CACHE_PATH, encoding="utf-8") as f:
+    with open(cache_path, encoding="utf-8") as f:
         return json.load(f)
 
-
-PIPE_SPRITES_CACHE_PATH = Path("data/cache/entity_pipe_sprites.json")
 
 # Ключи pictures у труб (pipe/kr-steel-pipe/se-space-pipe/infinity-pipe) —
 # один статичный лист на КАЖДУЮ комбинацию подключений N/E/S/W (в отличие
@@ -888,10 +909,18 @@ def build_pipe_sprite_variant_map(raw: dict, entity_names: set[str]) -> dict[str
     Аналог build_entity_sprite_map, но для труб — сохраняет ВСЕ 16
     вариантов на сущность (entity_name -> {variant_key: leaf}), чтобы
     фронт мог на канвасе выбирать нужный спрайт по факту подключения
-    соседей, а не показывать один и тот же спрайт всегда.
+    соседей, а не показывать один и тот же спрайт всегда. Общее
+    (не по-профильное) хранилище, merge-write — см. build_entity_sprite_map.
     """
-    result: dict[str, dict[str, dict]] = {}
+    cache_path = pipe_sprite_map_path()
+    existing: dict[str, dict[str, dict]] = {}
+    if cache_path.exists():
+        try:
+            existing = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
 
+    newly_found: dict[str, dict[str, dict]] = {}
     for section_name, section in raw.items():
         if not isinstance(section, dict):
             continue
@@ -900,23 +929,24 @@ def build_pipe_sprite_variant_map(raw: dict, entity_names: set[str]) -> dict[str
                 continue
             variants = _extract_pipe_picture_variants(proto)
             if variants:
-                result[name] = variants
+                newly_found[name] = variants
 
-    PIPE_SPRITES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(PIPE_SPRITES_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+    merged = {**existing, **newly_found}
 
-    return result
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, ensure_ascii=False, indent=2)
+
+    return merged
 
 
 def get_pipe_sprite_variant_map() -> dict[str, dict]:
-    if not PIPE_SPRITES_CACHE_PATH.exists():
+    cache_path = pipe_sprite_map_path()
+    if not cache_path.exists():
         return {}
-    with open(PIPE_SPRITES_CACHE_PATH, encoding="utf-8") as f:
+    with open(cache_path, encoding="utf-8") as f:
         return json.load(f)
 
-
-FLUID_OVERLAYS_CACHE_PATH = Path("data/cache/entity_fluid_overlays.json")
 
 _DIRECTION_TO_KEY = {0: "north", 4: "east", 8: "south", 12: "west"}
 
@@ -1026,9 +1056,17 @@ def build_fluid_overlay_map(raw: dict, entity_names: set[str]) -> dict[str, list
     """
     Аналог build_pipe_sprite_variant_map, но для патрубков жидкостных
     fluid_boxes сборочных машин (см. _extract_assembling_machine_fluid_overlays).
+    Общее (не по-профильное) хранилище, merge-write — см. build_entity_sprite_map.
     """
-    result: dict[str, list[dict]] = {}
+    cache_path = fluid_overlay_map_path()
+    existing: dict[str, list[dict]] = {}
+    if cache_path.exists():
+        try:
+            existing = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
 
+    newly_found: dict[str, list[dict]] = {}
     section = raw.get("assembling-machine")
     if isinstance(section, dict):
         for name, proto in section.items():
@@ -1036,23 +1074,23 @@ def build_fluid_overlay_map(raw: dict, entity_names: set[str]) -> dict[str, list
                 continue
             overlays = _extract_assembling_machine_fluid_overlays(proto)
             if overlays:
-                result[name] = overlays
+                newly_found[name] = overlays
 
-    FLUID_OVERLAYS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(FLUID_OVERLAYS_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+    merged = {**existing, **newly_found}
 
-    return result
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, ensure_ascii=False, indent=2)
+
+    return merged
 
 
 def get_fluid_overlay_map() -> dict[str, list[dict]]:
-    if not FLUID_OVERLAYS_CACHE_PATH.exists():
+    cache_path = fluid_overlay_map_path()
+    if not cache_path.exists():
         return {}
-    with open(FLUID_OVERLAYS_CACHE_PATH, encoding="utf-8") as f:
+    with open(cache_path, encoding="utf-8") as f:
         return json.load(f)
-
-
-DIRECTIONAL_SPRITES_CACHE_PATH = Path("data/cache/entity_directional_sprites.json")
 
 
 def _layers_signature(layers: list[dict]) -> tuple:
@@ -1081,8 +1119,15 @@ def build_directional_sprite_map(
     но реально во всех 4 лежит одна и та же картинка), рендерить и резать
     в PNG 4 одинаковых файла незачем.
     """
-    result: dict[str, dict[str, list[dict]]] = {}
+    cache_path = directional_sprite_map_path()
+    existing: dict[str, dict[str, list[dict]]] = {}
+    if cache_path.exists():
+        try:
+            existing = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
 
+    newly_found: dict[str, dict[str, list[dict]]] = {}
     for section_name, section in raw.items():
         if not isinstance(section, dict):
             continue
@@ -1101,17 +1146,20 @@ def build_directional_sprite_map(
 
             north_sig = _layers_signature(per_direction["north"])
             if any(_layers_signature(per_direction[k]) != north_sig for k in ("east", "south", "west")):
-                result[name] = per_direction
+                newly_found[name] = per_direction
 
-    DIRECTIONAL_SPRITES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(DIRECTIONAL_SPRITES_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+    merged = {**existing, **newly_found}
 
-    return result
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, ensure_ascii=False, indent=2)
+
+    return merged
 
 
 def get_directional_sprite_map() -> dict[str, dict[str, list[dict]]]:
-    if not DIRECTIONAL_SPRITES_CACHE_PATH.exists():
+    cache_path = directional_sprite_map_path()
+    if not cache_path.exists():
         return {}
-    with open(DIRECTIONAL_SPRITES_CACHE_PATH, encoding="utf-8") as f:
+    with open(cache_path, encoding="utf-8") as f:
         return json.load(f)

@@ -1,59 +1,49 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useEntityCatalogStore, type CatalogEntity } from '../../store/entityCatalogStore'
 import { useCanvasStore } from '../../store/canvasStore'
-import { useUiStore } from '../../store/uiStore'
+import { useUiStore, SIDEBAR_WIDTH } from '../../store/uiStore'
 import { HIDDEN_CATEGORY_IDS } from '../../hiddenCategories'
+import { ItemIcon } from '../common/ItemIcon'
+import { QualityRow } from '../common/QualityRow'
+import { storedQuality } from '../../lib/quality'
+import { tilePseudoEntities } from '../../lib/tileCatalog'
 
 export function EntityPalette() {
-  const catalog = useEntityCatalogStore((s) => s.entities)
+  const entities = useEntityCatalogStore((s) => s.entities)
+  const tileDefs = useEntityCatalogStore((s) => s.tiles)
+  // плитки — отдельная категория «Плитки» (type === 'tile')
+  const tileItems = useMemo(() => tilePseudoEntities(tileDefs), [tileDefs])
   const loading = useEntityCatalogStore((s) => s.loading)
   const error = useEntityCatalogStore((s) => s.error)
   const setPlacing = useCanvasStore((s) => s.setPlacing)
   const placing = useCanvasStore((s) => s.placing)
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
-  const sidebarWidth = useUiStore((s) => s.sidebarWidth)
-  const setSidebarWidth = useUiStore((s) => s.setSidebarWidth)
-
-  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
-
-  function handleResizeStart(e: React.MouseEvent) {
-    e.preventDefault()
-    resizeRef.current = { startX: e.clientX, startWidth: sidebarWidth }
-    window.addEventListener('mousemove', handleResizeMove)
-    window.addEventListener('mouseup', handleResizeEnd)
-  }
-
-  function handleResizeMove(e: MouseEvent) {
-    if (!resizeRef.current) return
-    // панель справа — тянем влево, чтобы увеличить ширину
-    const dx = resizeRef.current.startX - e.clientX
-    setSidebarWidth(resizeRef.current.startWidth + dx)
-  }
-
-  function handleResizeEnd() {
-    resizeRef.current = null
-    window.removeEventListener('mousemove', handleResizeMove)
-    window.removeEventListener('mouseup', handleResizeEnd)
-  }
+  const selectedQuality = useUiStore((s) => s.selectedQuality)
+  const setSelectedQuality = useUiStore((s) => s.setSelectedQuality)
+  const hasQualities = useEntityCatalogStore((s) => s.qualities.length > 0)
+  // качество, с которым сущность берётся в курсор (только профили с quality)
+  const pickQuality = hasQualities ? storedQuality(selectedQuality) : undefined
 
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
 
   const categories = useMemo(() => {
     const map = new Map<string, CatalogEntity[]>()
-    for (const e of catalog) {
+    for (const e of entities) {
       if (HIDDEN_CATEGORY_IDS.has(e.categoryId)) continue
       const arr = map.get(e.category) ?? []
       arr.push(e)
       map.set(e.category, arr)
     }
+    if (tileItems.length > 0) map.set(tileItems[0].category, tileItems)
     return Array.from(map.entries()).sort((a, b) => {
       const orderA = a[1][0]?.categoryOrder ?? 'zzz'
       const orderB = b[1][0]?.categoryOrder ?? 'zzz'
       return orderA.localeCompare(orderB)
     })
-  }, [catalog])
+  }, [entities, tileItems])
+  const catalog = useMemo(() => [...entities, ...tileItems], [entities, tileItems])
 
   const [activeCategory, setActiveCategory] = useState<string | null>(
     categories[0]?.[0] ?? null,
@@ -85,9 +75,27 @@ export function EntityPalette() {
   }, [activeCategory, categories])
 
   const activeTypeId =
-    placing?.items.length === 1 ? placing.items[0].typeId : null
+    placing?.items.length === 1 &&
+    (placing.items[0].type === 'tile' || placing.items[0].quality === pickQuality)
+      ? placing.items[0].typeId
+      : null
 
   function pick(entity: CatalogEntity) {
+    if (entity.type === 'tile') {
+      // плитка: слой под сущностями, без качества/поворота/подземных механик
+      const isSameTile = placing?.items.length === 1 && placing.items[0].typeId === entity.typeId
+      setPlacing(
+        isSameTile
+          ? null
+          : {
+              items: [{
+                typeId: entity.typeId, type: 'tile', icon: entity.icon, label: entity.label,
+                width: 32, height: 32, offsetX: 0, offsetY: 0,
+              }],
+            },
+      )
+      return
+    }
     setPlacing(
       activeTypeId === entity.typeId
         ? null
@@ -104,6 +112,7 @@ export function EntityPalette() {
                 offsetY: 0,
                 craftingCategories: entity.craftingCategories ?? undefined,
                 moduleSlots: entity.moduleSlots,
+                quality: pickQuality,
               },
             ],
             // Свежий выбор из палитры — включаем двухшаговую постановку
@@ -126,26 +135,23 @@ export function EntityPalette() {
         height: entity.height,
         craftingCategories: entity.craftingCategories ?? undefined, // ← добавить
         moduleSlots: entity.moduleSlots,                             // ← добавить
+        quality: entity.type === 'tile' ? undefined : pickQuality,
       }),
     )
   }
 
   return (
     <>
+      {/* Палитра по умолчанию открыта на максимальную ширину (SIDEBAR_WIDTH
+          в uiStore); сворачивается кнопкой, ширину вручную не меняем */}
       <div
         className={`sidebar-collapse-tab${sidebarCollapsed ? ' collapsed' : ''}`}
-        style={{ right: sidebarCollapsed ? 0 : sidebarWidth }}
+        style={{ right: sidebarCollapsed ? 0 : `min(${SIDEBAR_WIDTH}px, 45vw)` }}
         onClick={toggleSidebar}
       >
         {sidebarCollapsed ? '‹' : '›'}
       </div>
-      <div
-        className={`factory-sidebar${sidebarCollapsed ? ' collapsed' : ''}`}
-        style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
-      >
-        {!sidebarCollapsed && (
-          <div className="sidebar-resize-handle" onMouseDown={handleResizeStart} />
-        )}
+      <div className={`factory-sidebar${sidebarCollapsed ? ' collapsed' : ''}`} style={{ width: sidebarCollapsed ? 0 : SIDEBAR_WIDTH }}>
         <div className="grid-menu">
           <div className="gm-header">
             <span className="gm-title">Сущности</span>
@@ -196,7 +202,7 @@ export function EntityPalette() {
                         onDragStart={(ev) => handleDragStart(ev, e)}
                         onClick={() => pick(e)}
                       >
-                        <img src={e.icon} alt={e.label} />
+                        <ItemIcon src={e.icon} alt={e.label} quality={e.type === 'tile' ? undefined : pickQuality} />
                       </div>
                     ))}
                   </div>
@@ -215,13 +221,14 @@ export function EntityPalette() {
                     onDragStart={(ev) => handleDragStart(ev, e)}
                     onClick={() => pick(e)}
                   >
-                    <img src={e.icon} alt={e.label} />
+                    <ItemIcon src={e.icon} alt={e.label} quality={e.type === 'tile' ? undefined : pickQuality} />
                   </div>
                 ))}
                 {searchResults.length === 0 && <div className="gm-empty">Ничего не найдено</div>}
               </div>
             )}
           </div>
+          <QualityRow value={selectedQuality} onChange={setSelectedQuality} />
         </div>
       </div>
     </>

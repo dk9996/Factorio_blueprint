@@ -11,12 +11,20 @@ import type {
 import { decodeBlueprintString } from './decode.ts'
 import { decodeDirection, encodeDirection } from './direction.ts'
 import { buildExtra } from './extra.ts'
-import { parseModules, serializeModules } from './modules.ts'
+import { storedQuality } from '../quality.ts'
+import { parseTileKey, tileKey, type TileMap } from '../tiles.ts'
+import { parseBlueprintWires, serializeWires } from '../circuit/blueprintWires.ts'
+import type { Wire } from '../circuit/types.ts'
+import { makeIsModuleName, parseBlueprintItems, serializeBlueprintItems } from './modules.ts'
 import { parseTopLevel } from './book.ts'
 import { DEFAULT_EXPORT_VERSION } from './version.ts'
 import { remapWires } from './wires.ts'
 
 const GRID = 32
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
 
 function isSideways(direction: EntityDirection | undefined): boolean {
   return direction === 90 || direction === 270
@@ -45,8 +53,27 @@ export interface BlueprintTabMeta {
 export interface BlueprintImportResult {
   entities: PlacedEntity[]
   nextId: number
+  // Слой плиток чертежа (tiles[] -> "x,y" -> имя). Имена, которых нет в
+  // каталоге профиля, тоже сохраняются — рисуются заглушкой и уходят в
+  // экспорт без потерь.
+  tiles: TileMap
+  // Красные/зелёные провода (схемная сеть). Остальные провода чертежа
+  // (медь столбов и т.п.) остаются в meta.wires и пишутся обратно как есть.
+  wires: Wire[]
   skippedNames: string[]
   meta: BlueprintTabMeta
+}
+
+// tiles[] чертежа -> карта плиток. position плитки в чертеже — целые
+// координаты ячейки (левый верхний угол ячейки в тайлах), та же система,
+// что у сущностей: сущность 1x1 с position (0.5, 0.5) стоит в ячейке (0, 0).
+export function parseBlueprintTiles(raw: RawBlueprintTile[] | undefined): TileMap {
+  const tiles: TileMap = {}
+  for (const t of raw ?? []) {
+    if (!t || typeof t.name !== 'string' || !t.position) continue
+    tiles[tileKey(Math.floor(t.position.x), Math.floor(t.position.y))] = t.name
+  }
+  return tiles
 }
 
 // Один чертёж (data.entities) -> сущности приложения с РЕАЛЬНЫМИ id
@@ -57,10 +84,13 @@ export function blueprintDataToEntities(
   data: BlueprintData,
   startId: number,
   catalogByTypeId: Map<string, CatalogEntity>,
+  moduleNames?: Set<string>,
 ): BlueprintImportResult {
+  const isModuleName = makeIsModuleName(moduleNames)
   const entities: PlacedEntity[] = []
   const skippedNames: string[] = []
   const entityNumberMap: Record<number, number> = {}
+  const typeByNumber: Record<number, string | undefined> = {}
   let id = startId
 
   for (const raw of data.entities ?? []) {
@@ -76,8 +106,11 @@ export function blueprintDataToEntities(
     const height = sideways ? meta.width : meta.height
     const isPipe = !!meta.pipeSpriteVariants
 
-    const modules = parseModules(raw.items)
-    const extra = buildExtra(raw)
+    // items -> модули по слотам; всё остальное (топливо, лишнее) остаётся
+    // в extra.items и пишется обратно как есть.
+    const parsedItems = parseBlueprintItems(raw.items, meta.moduleSlots ?? 0, isModuleName)
+    const baseExtra = buildExtra(raw)
+    const extra = parsedItems.rest ? { ...(baseExtra ?? {}), items: parsedItems.rest } : baseExtra
 
     entities.push({
       id,
@@ -91,30 +124,38 @@ export function blueprintDataToEntities(
       height,
       direction: isPipe ? undefined : direction,
       recipe: typeof raw.recipe === 'string' ? raw.recipe : undefined,
+      quality: typeof raw.quality === 'string' ? storedQuality(raw.quality) : undefined,
+      recipeQuality: typeof raw.recipe_quality === 'string' ? storedQuality(raw.recipe_quality) : undefined,
       craftingCategories: meta.craftingCategories ?? undefined,
       moduleSlots: meta.moduleSlots || undefined,
-      modules: modules.length > 0 ? modules : undefined,
+      modules: parsedItems.modules,
+      moduleExtra: parsedItems.moduleExtra,
+      controlBehavior: isPlainObject(raw.control_behavior) ? (raw.control_behavior as Record<string, unknown>) : undefined,
       extra,
     })
     entityNumberMap[raw.entity_number] = id
+    typeByNumber[raw.entity_number] = meta.type
     id++
   }
+
+  const { wires, passthrough } = parseBlueprintWires(data.wires, entityNumberMap, (n) => typeByNumber[n])
 
   return {
     entities,
     nextId: id,
+    tiles: parseBlueprintTiles(data.tiles),
+    wires,
     skippedNames,
     meta: {
       label: data.label,
       description: data.description,
       icons: data.icons,
-      tiles: data.tiles,
       schedules: data.schedules,
       snapToGrid: data.snap_to_grid,
       absoluteSnapping: data.absolute_snapping,
       positionRelativeToGrid: data.position_relative_to_grid,
       version: data.version,
-      wires: data.wires,
+      wires: passthrough.length > 0 ? passthrough : undefined,
       entityNumberMap,
     },
   }
@@ -138,13 +179,14 @@ export interface ImportBlueprintStringResult {
 export function importBlueprintString(
   rawString: string,
   catalogByTypeId: Map<string, CatalogEntity>,
+  moduleNames?: Set<string>,
 ): ImportBlueprintStringResult {
   const json = decodeBlueprintString(rawString)
   const { blueprints, skippedBookEntries } = parseTopLevel(json)
 
   const skippedNames: string[] = []
   const tabs: ImportedTab[] = blueprints.map(({ label, data }) => {
-    const result = blueprintDataToEntities(data, 1, catalogByTypeId)
+    const result = blueprintDataToEntities(data, 1, catalogByTypeId, moduleNames)
     skippedNames.push(...result.skippedNames)
     return { title: label, result }
   })
@@ -162,6 +204,14 @@ export interface BlueprintExportOptions {
   // tiles/wires в экспорт не попадают (они относятся к ВСЕЙ исходной
   // вкладке, а не к произвольному подмножеству сущностей).
   meta?: BlueprintTabMeta
+  // Профиль с DLC quality: писать quality/recipe_quality/id.quality модулей.
+  // Без него (base, elevated-rails) поля качества в чертёж не попадают.
+  includeQuality?: boolean
+  // Слой плиток вкладки. undefined — вкладка без слоя плиток (тогда для
+  // старых вкладок остаётся прежний passthrough meta.tiles).
+  tiles?: TileMap
+  // Красные/зелёные провода вкладки (схемная сеть)
+  wires?: Wire[]
 }
 
 export interface BlueprintExportResult {
@@ -185,15 +235,18 @@ export function entitiesToBlueprintData(
   // direction по 8-ступенчатой шкале — вдвое неверно.
   const version = DEFAULT_EXPORT_VERSION
 
-  if (entities.length === 0) {
+  const tileEntries = Object.entries(opts.tiles ?? {})
+  if (entities.length === 0 && tileEntries.length === 0) {
     return {
       version,
       data: { item: 'blueprint', label: opts.label, entities: [], version },
     }
   }
 
-  const minX = Math.min(...entities.map((e) => e.x))
-  const minY = Math.min(...entities.map((e) => e.y))
+  // Начало координат — минимальный угол по сущностям И плиткам (px).
+  const tilePos = tileEntries.map(([key, name]) => ({ name, pos: parseTileKey(key) }))
+  const minX = Math.min(...entities.map((e) => e.x), ...tilePos.map((t) => t.pos[0] * GRID))
+  const minY = Math.min(...entities.map((e) => e.y), ...tilePos.map((t) => t.pos[1] * GRID))
 
   const placedIdToNewEntityNumber = new Map<number, number>()
   const rawEntities: RawBlueprintEntity[] = entities.map((e, i) => {
@@ -223,17 +276,37 @@ export function entitiesToBlueprintData(
       if (dir !== undefined) raw.direction = dir
     }
     if (e.recipe) raw.recipe = e.recipe
-    const items = serializeModules(e.modules)
+    // Качество — только для профилей с DLC quality (opts.includeQuality);
+    // normal в чертёж не пишется (поле отсутствует).
+    const includeQuality = opts.includeQuality ?? false
+    if (includeQuality) {
+      const q = storedQuality(e.quality)
+      if (q) raw.quality = q
+      const rq = storedQuality(e.recipeQuality)
+      if (rq && e.recipe) raw.recipe_quality = rq
+    }
+    if (e.controlBehavior) raw.control_behavior = e.controlBehavior
+    const items = serializeBlueprintItems(e.modules, e.moduleExtra, e.extra?.items, catalogEntry?.type ?? e.type, includeQuality)
     if (items !== undefined) raw.items = items
+    else delete raw.items
 
     return raw
   })
 
-  const tiles = opts.meta?.tiles?.map((t) => ({
-    name: t.name,
-    position: { x: t.position.x - minX / GRID, y: t.position.y - minY / GRID },
-  }))
-  const wires = remapWires(opts.meta?.wires, opts.meta?.entityNumberMap, placedIdToNewEntityNumber)
+  const tiles: RawBlueprintTile[] | undefined = opts.tiles
+    ? tilePos.map((t) => ({ name: t.name, position: { x: t.pos[0] - minX / GRID, y: t.pos[1] - minY / GRID } }))
+    : opts.meta?.tiles?.map((t) => ({
+        name: t.name,
+        position: { x: t.position.x - minX / GRID, y: t.position.y - minY / GRID },
+      }))
+  const typeOfPlaced = (placedId: number) => {
+    const ent = entities.find((x) => x.id === placedId)
+    return ent ? opts.catalogByTypeId.get(ent.typeId)?.type ?? ent.type : undefined
+  }
+  const circuitWires = serializeWires(opts.wires ?? [], placedIdToNewEntityNumber, typeOfPlaced)
+  const passthroughWires = remapWires(opts.meta?.wires, opts.meta?.entityNumberMap, placedIdToNewEntityNumber) ?? []
+  const allWires = [...circuitWires, ...passthroughWires]
+  const wires = allWires.length > 0 ? allWires : undefined
 
   const data: BlueprintData = {
     item: 'blueprint',
@@ -258,6 +331,8 @@ export function entitiesToBlueprintData(
 export interface TabForBookExport {
   title: string
   entities: PlacedEntity[]
+  tiles?: TileMap
+  wires?: Wire[]
   meta?: BlueprintTabMeta
 }
 
@@ -266,6 +341,7 @@ export function tabsToBlueprintBookData(
   tabs: TabForBookExport[],
   catalogByTypeId: Map<string, CatalogEntity>,
   bookLabel: string,
+  includeQuality = false,
 ): { data: BlueprintBookData; version: number } {
   const version = DEFAULT_EXPORT_VERSION
   const data: BlueprintBookData = {
@@ -277,6 +353,9 @@ export function tabsToBlueprintBookData(
         label: tab.title,
         meta: tab.meta,
         catalogByTypeId,
+        includeQuality,
+        tiles: tab.tiles,
+        wires: tab.wires,
       })
       return { index, blueprint: blueprintData }
     }),

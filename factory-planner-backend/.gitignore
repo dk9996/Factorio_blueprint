@@ -5,3 +5,6 @@ __pycache__/
 data/factory_planner.db
 data/cache/
 *.egg-info/
+# Собирается локально по DEPLOY.md (scripts/build_content.py), заливается
+# на сервер rsync'ом — не коммитится (гигабайты спрайтов).
+content/

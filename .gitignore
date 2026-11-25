@@ -1,0 +1,65 @@
+# Секреты и локальные настройки (шаблоны .env.example остаются в Git)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Зависимости и виртуальные окружения
+node_modules/
+venv/
+.venv/
+env/
+
+# Результаты сборки и тестов
+dist/
+build/
+frontend-dist/
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.vite/
+.eslintcache
+.tox/
+.nox/
+.hypothesis/
+
+# Python-кэш и пакеты
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Локальные данные приложения
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite3
+data/cache/
+**/data/profile-build/
+
+# Тяжёлый сгенерированный контент для деплоя
+content/
+
+# Логи и временные файлы
+*.log
+*.tmp
+*.temp
+*.pid
+*.pid.lock
+*.swp
+*.swo
+*.bak
+*~
+
+# Настройки редакторов и ОС
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Локальные файлы инструментов ИИ
+.claude/scheduled_tasks.lock

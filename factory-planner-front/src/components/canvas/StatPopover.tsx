@@ -1,4 +1,7 @@
 import type { PlacedEntity } from '../../store/canvasStore'
+import { EntityQuality } from './EntityQuality'
+import { EntityTitle } from './EntityTitle'
+import { EntityNetsBlock } from '../circuit/SimNets'
 
 interface Props {
   entity: PlacedEntity
@@ -24,6 +27,9 @@ export function StatPopover({ entity }: Props) {
           {entity.throughput ?? 100}%
         </span>
       </div>
+      <EntityTitle entity={entity} />
+      <EntityQuality entity={entity} />
+      <EntityNetsBlock entityId={entity.id} />
       <div className="arrow" />
     </div>
   )

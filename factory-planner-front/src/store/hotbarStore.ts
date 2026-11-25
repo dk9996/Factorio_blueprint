@@ -11,6 +11,7 @@ export type HotbarItem =
       height: number
       craftingCategories?: string[] // ← добавить
       moduleSlots?: number          // ← добавить
+      quality?: string              // качество (только профили с DLC quality)
     }
   | { kind: 'blueprint'; factoryId: string }
 const ROWS = 10

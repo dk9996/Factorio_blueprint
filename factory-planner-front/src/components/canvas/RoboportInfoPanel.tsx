@@ -1,3 +1,6 @@
+import { EntityTitle } from './EntityTitle'
+import { EntityPreview } from './EntityPreview'
+import { EntityQuality } from './EntityQuality'
 import type { PlacedEntity } from '../../store/canvasStore'
 import type { CatalogEntity } from '../../store/entityCatalogStore'
 
@@ -12,7 +15,7 @@ export function RoboportInfoPanel({ entity, catalogEntry, onClose }: Props) {
     <div className="machine-modal-overlay" onClick={onClose}>
       <div className="machine-modal" onClick={(e) => e.stopPropagation()}>
         <div className="mm-titlebar">
-          <span className="mm-titlebar-name">{entity.label}</span>
+          <EntityTitle entity={entity} />
           <div className="mm-titlebar-actions">
             <button className="mm-icon-btn" title="Связи">🔗</button>
             <button className="mm-close-btn" onClick={onClose} title="Закрыть">✕</button>
@@ -20,8 +23,9 @@ export function RoboportInfoPanel({ entity, catalogEntry, onClose }: Props) {
         </div>
 
         <div className="mm-preview">
-          <img src={entity.icon} alt={entity.label} />
+          <EntityPreview entity={entity} />
         </div>
+        <EntityQuality entity={entity} />
 
         <div style={{ padding: '4px 14px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
           {typeof catalogEntry?.logisticRadius === 'number' && (

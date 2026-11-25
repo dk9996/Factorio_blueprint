@@ -1,7 +1,10 @@
+import { EntityTitle } from './EntityTitle'
+import { EntityPreview } from './EntityPreview'
+import { EntityQuality } from './EntityQuality'
+import { EntityNetsBlock } from '../circuit/SimNets'
 import type { ReactNode } from 'react'
 import type { PlacedEntity } from '../../store/canvasStore'
-import { useCanvasStore } from '../../store/canvasStore'
-import { EntityFilterSlots } from './EntityFilterSlots'
+import { useUiStore } from '../../store/uiStore'
 
 interface Props {
   entity: PlacedEntity
@@ -12,18 +15,21 @@ interface Props {
   extra?: ReactNode
 }
 
-export function InserterInfoPanel({ entity, filterCount, onClose, extra }: Props) {
-  const updateEntityConfig = useCanvasStore((s) => s.updateEntityConfig)
-  const config = entity.config ?? {}
-  const overrideStackSize = Boolean(config.overrideStackSize)
-  const stackSizeOverride = typeof config.stackSizeOverride === 'number' ? config.stackSizeOverride : 1
+export function InserterInfoPanel({ entity, onClose, extra }: Props) {
 
   return (
-    <div className="machine-modal-overlay" onClick={onClose}>
+    <div
+      className="machine-modal-overlay"
+      onClick={(e) => {
+        // второй клик двойного клика по сущности — сразу окно настроек
+        onClose()
+        if (e.detail >= 2) useUiStore.getState().openEntitySettings([entity.id])
+      }}
+    >
       <div className="modal-row" onClick={(e) => e.stopPropagation()}>
         <div className="machine-modal ins-modal">
           <div className="mm-titlebar">
-            <span className="mm-titlebar-name">{entity.label}</span>
+            <EntityTitle entity={entity} />
             <div className="mm-titlebar-actions">
               <button className="mm-icon-btn" title="Поиск">🔍</button>
               <button className="mm-icon-btn" title="Связи">🔗</button>
@@ -40,32 +46,17 @@ export function InserterInfoPanel({ entity, filterCount, onClose, extra }: Props
           </div>
 
           <div className="mm-preview">
-            <img src={entity.icon} alt={entity.label} />
+            <EntityPreview entity={entity} />
           </div>
+        <EntityQuality entity={entity} />
+        <EntityNetsBlock entityId={entity.id} />
 
-          <EntityFilterSlots entity={entity} filterCount={filterCount} />
-
-          <div className="ins-stack-override">
-            <label className="ins-checkbox-row">
-              <input
-                type="checkbox"
-                checked={overrideStackSize}
-                onChange={(e) => updateEntityConfig(entity.id, { overrideStackSize: e.target.checked })}
-              />
-              Переопределить размер пачки
-            </label>
-            <div className="ins-stack-row">
-              <input
-                type="range"
-                min={1}
-                max={12}
-                value={stackSizeOverride}
-                disabled={!overrideStackSize}
-                onChange={(e) => updateEntityConfig(entity.id, { stackSizeOverride: Number(e.target.value) })}
-              />
-              <div className="ins-stack-value">{stackSizeOverride}</div>
-            </div>
-          </div>
+          <button
+            className="ie-btn es-panel-btn"
+            onClick={() => { onClose(); useUiStore.getState().openEntitySettings([entity.id]) }}
+          >
+            ⚙ Настройки: фильтры, размер стака…
+          </button>
         </div>
 
         {extra}

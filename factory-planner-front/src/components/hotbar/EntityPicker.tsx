@@ -2,6 +2,10 @@ import { useUiStore } from '../../store/uiStore'
 import { useHotbarStore } from '../../store/hotbarStore'
 import { useEntityCatalogStore, type CatalogEntity } from '../../store/entityCatalogStore'
 import { useMemo, useState } from 'react'
+import { ItemIcon } from '../common/ItemIcon'
+import { QualityRow } from '../common/QualityRow'
+import { storedQuality } from '../../lib/quality'
+import { tilePseudoEntities } from '../../lib/tileCatalog'
 
 // Те же временно скрытые категории, что и в EntityPalette — каталог общий,
 // список сущностей для хотбара не должен расходиться с палитрой.
@@ -17,24 +21,32 @@ export function EntityPicker() {
   const pickerTarget = useUiStore((s) => s.pickerTarget)
   const closePicker = useUiStore((s) => s.closePicker)
   const assignSlot = useHotbarStore((s) => s.assignSlot)
-  const catalog = useEntityCatalogStore((s) => s.entities)
+  const entities = useEntityCatalogStore((s) => s.entities)
+  const tileDefs = useEntityCatalogStore((s) => s.tiles)
+  const tileItems = useMemo(() => tilePseudoEntities(tileDefs), [tileDefs])
+  const hasQualities = useEntityCatalogStore((s) => s.qualities.length > 0)
+  const selectedQuality = useUiStore((s) => s.selectedQuality)
+  const setSelectedQuality = useUiStore((s) => s.setSelectedQuality)
+  const slotQuality = hasQualities ? storedQuality(selectedQuality) : undefined
 
   const [query, setQuery] = useState('')
 
   const categories = useMemo(() => {
     const map = new Map<string, CatalogEntity[]>()
-    for (const e of catalog) {
+    for (const e of entities) {
       if (HIDDEN_CATEGORY_IDS.has(e.categoryId)) continue
       const arr = map.get(e.category) ?? []
       arr.push(e)
       map.set(e.category, arr)
     }
+    if (tileItems.length > 0) map.set(tileItems[0].category, tileItems)
     return Array.from(map.entries()).sort((a, b) => {
       const orderA = a[1][0]?.categoryOrder ?? 'zzz'
       const orderB = b[1][0]?.categoryOrder ?? 'zzz'
       return orderA.localeCompare(orderB)
     })
-  }, [catalog])
+  }, [entities, tileItems])
+  const catalog = useMemo(() => [...entities, ...tileItems], [entities, tileItems])
 
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
 
@@ -68,6 +80,13 @@ export function EntityPicker() {
   })()
 
   function pick(entity: CatalogEntity) {
+    if (entity.type === 'tile') {
+      assignSlot(pickerTarget!.rowIndex, pickerTarget!.slotIndex, {
+        kind: 'entity', typeId: entity.typeId, type: 'tile', icon: entity.icon, label: entity.label, width: 32, height: 32,
+      })
+      closePicker()
+      return
+    }
     assignSlot(pickerTarget!.rowIndex, pickerTarget!.slotIndex, {
       kind: 'entity',
       typeId: entity.typeId,
@@ -78,6 +97,7 @@ export function EntityPicker() {
       height: entity.height,
       craftingCategories: entity.craftingCategories ?? undefined,
       moduleSlots: entity.moduleSlots,
+      quality: slotQuality,
     })
     closePicker()
   }
@@ -123,7 +143,7 @@ export function EntityPicker() {
                     title={e.label}
                     onClick={() => pick(e)}
                   >
-                    <img src={e.icon} alt={e.label} />
+                    <ItemIcon src={e.icon} alt={e.label} quality={e.type === 'tile' ? undefined : slotQuality} />
                   </div>
                 ))}
                 {searchResults.length === 0 && <div className="gm-empty">Ничего не найдено</div>}
@@ -139,7 +159,7 @@ export function EntityPicker() {
                         title={e.label}
                         onClick={() => pick(e)}
                       >
-                        <img src={e.icon} alt={e.label} />
+                        <ItemIcon src={e.icon} alt={e.label} quality={e.type === 'tile' ? undefined : slotQuality} />
                       </div>
                     ))}
                   </div>
@@ -148,6 +168,7 @@ export function EntityPicker() {
               </div>
             )}
           </div>
+          <QualityRow value={selectedQuality} onChange={setSelectedQuality} />
         </div>
       </div>
     </div>

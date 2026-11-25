@@ -1,3 +1,4 @@
+import { ItemIcon } from '../common/ItemIcon'
 import { useFactoryStore } from '../../store/factoryStore'
 import { useHotbarStore, type HotbarItem } from '../../store/hotbarStore'
 import { useCanvasStore } from '../../store/canvasStore'
@@ -6,6 +7,7 @@ import { useTabsStore } from '../../store/tabsStore'
 import { useEntityCatalogStore } from '../../store/entityCatalogStore'
 import { buildPlacingGroupFromEntities } from '../../lib/clipboard/buildPlacingGroup'
 import { useState } from 'react'
+import { WireToolButtons } from './WireToolButtons'
 
 export function Hotbar() {
   const factories = useFactoryStore((s) => s.factories)
@@ -43,7 +45,11 @@ export function Hotbar() {
   // одиночный клик — взять как призрак (и сущность, и чертёж ведут себя одинаково)
   function handleSlotClick(item: HotbarItem) {
     if (item.kind === 'entity') {
-      const isSame = placing?.items.length === 1 && placing.items[0].typeId === item.typeId
+      const isSame =
+        placing?.items.length === 1 &&
+        placing.items[0].typeId === item.typeId &&
+        placing.items[0].quality === item.quality &&
+        placing.items[0].type === item.type
       // Свежий выбор из хотбара — включаем двухшаговую постановку
       // подземных конвейеров/труб (см. src/lib/underground.ts).
       const undergroundAutoCycle =
@@ -63,6 +69,7 @@ export function Hotbar() {
                 offsetY: 0,
                 craftingCategories: item.craftingCategories, // ← добавить
                 moduleSlots: item.moduleSlots,               // ← добавить
+                quality: item.quality,
               }],
               undergroundAutoCycle,
             },
@@ -108,14 +115,14 @@ export function Hotbar() {
       return (
         <div
           key={slotIndex}
-          className={`hb-slot filled${placing?.items.length === 1 && placing.items[0].typeId === item.typeId ? ' active' : ''}`}
+          className={`hb-slot filled${placing?.items.length === 1 && placing.items[0].typeId === item.typeId && placing.items[0].quality === item.quality ? ' active' : ''}`}
           title={item.label}
           onClick={() => handleSlotClick(item)}
           onMouseDown={(e) => handleMiddleClick(e, rowIndex, slotIndex)}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => handleDrop(e, rowIndex, slotIndex)}
         >
-          <img src={item.icon} alt={item.label} />
+          <ItemIcon src={item.icon} alt={item.label} quality={item.quality} />
         </div>
       )
     }
@@ -182,6 +189,7 @@ export function Hotbar() {
           </div>
         ))}
       </div>
+      <WireToolButtons />
     </div>
   )
 }

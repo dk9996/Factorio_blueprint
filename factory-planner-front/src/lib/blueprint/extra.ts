@@ -7,7 +7,12 @@ import type { RawBlueprintEntity } from '../../types/blueprint.ts'
 // control_behavior, quality сущности, neighbours и т.д.) — сохраняем как
 // есть в PlacedEntity.extra и пишем обратно при экспорте без изменений,
 // чтобы чертёж из игры не терял настройки после импорта-экспорта.
-const PARSED_KEYS = new Set(['entity_number', 'name', 'position', 'direction', 'recipe', 'items'])
+// quality/recipe_quality — PlacedEntity.quality/recipeQuality (Quality DLC).
+const PARSED_KEYS = new Set([
+  'entity_number', 'name', 'position', 'direction', 'recipe', 'items', 'quality', 'recipe_quality',
+  // control_behavior — PlacedEntity.controlBehavior (lib/circuit/types.ts)
+  'control_behavior',
+])
 
 export function buildExtra(raw: RawBlueprintEntity): Record<string, unknown> | undefined {
   const extra: Record<string, unknown> = {}

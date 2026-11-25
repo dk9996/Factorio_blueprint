@@ -2,8 +2,7 @@ import json
 from pathlib import Path
 from app.services.locale_service import get_recipe_name_locale, get_item_group_locale
 from app.services.category_service import CategoryResolver
-
-RECIPES_CACHE_PATH = Path("data/cache/recipes.json")
+from app.content.icons import icon_url, proto_icon_key
 
 DEFAULT_CATEGORY = "crafting"
 DEFAULT_ENERGY_REQUIRED = 0.5
@@ -45,10 +44,7 @@ def _build_item_lookup(raw: dict) -> dict[str, dict]:
 
 
 def _get_icon_filename(proto: dict) -> str | None:
-    icon_path = proto.get("icon")
-    if not icon_path and proto.get("icons"):
-        icon_path = proto["icons"][0].get("icon")
-    return icon_path.rsplit("/", 1)[-1] if icon_path else None
+    return proto_icon_key(proto)
 
 
 def _resolve_recipe_icon(recipe: dict, items: dict, fluids: dict) -> str | None:
@@ -120,7 +116,7 @@ def _is_hidden_stack(name: str, stack_type: str, items: dict, fluids: dict) -> b
     return "hidden" in flags
 
 
-def build_recipe_catalog(raw: dict) -> dict:
+def build_recipe_catalog(raw: dict, profile_dir: Path) -> dict:
     items = _build_item_lookup(raw)  # теперь включает gun/ammo/capsule/armor и т.д.
     fluids = raw.get("fluid", {})
     recipe_name_locale = get_recipe_name_locale()
@@ -141,7 +137,7 @@ def build_recipe_catalog(raw: dict) -> dict:
                 "name": ing_name,
                 "amount": ing.get("amount", 1),
                 "type": ing_type,
-                "icon": f"/assets/{ing_icon}" if ing_icon else None,
+                "icon": icon_url(ing_icon) if ing_icon else None,
                 "hidden": _is_hidden_stack(ing_name, ing_type, items, fluids),
                 # fluidboxIndex/color — только для подсказок портов
                 # жидкости на канвасе (см. io_hints_service.py /
@@ -160,7 +156,7 @@ def build_recipe_catalog(raw: dict) -> dict:
                 "name": res_name,
                 "amount": res.get("amount", 1),
                 "type": res_type,
-                "icon": f"/assets/{res_icon}" if res_icon else None,
+                "icon": icon_url(res_icon) if res_icon else None,
                 "hidden": _is_hidden_stack(res_name, res_type, items, fluids),
                 "fluidboxIndex": res.get("fluidbox_index") if res_type == "fluid" else None,
                 "color": _resolve_fluid_color(res_name, fluids) if res_type == "fluid" else None,
@@ -171,17 +167,27 @@ def build_recipe_catalog(raw: dict) -> dict:
             display_cat = resolver.resolve(results[0]["name"])
 
         display_icon = (
-            f"/assets/{display_cat['icon_filename']}"
+            icon_url(display_cat['icon_filename'])
             if display_cat["icon_filename"]
-            else (f"/assets/{icon_filename}" if icon_filename else None)
+            else (icon_url(icon_filename) if icon_filename else None)
         )
 
         catalog.append({
             "name": name,
             "label": recipe_name_locale.get(name, name),
+            # Какие эффекты модулей рецепт допускает. Значения по умолчанию
+            # — из спецификации прототипа рецепта 2.0: productivity по
+            # умолчанию ЗАПРЕЩЕНА (base явно ставит allow_productivity=true
+            # на подходящих рецептах), остальные по умолчанию разрешены.
+            "allowProductivity": recipe.get("allow_productivity", False),
+            "allowSpeed": recipe.get("allow_speed", True),
+            "allowConsumption": recipe.get("allow_consumption", True),
+            "allowPollution": recipe.get("allow_pollution", True),
+            "allowQuality": recipe.get("allow_quality", True),
+            "allowedModuleCategories": recipe.get("allowed_module_categories"),
             "category": recipe.get("category", DEFAULT_CATEGORY),
             "energyRequired": recipe.get("energy_required", DEFAULT_ENERGY_REQUIRED),
-            "icon": f"/assets/{icon_filename}" if icon_filename else None,
+            "icon": icon_url(icon_filename) if icon_filename else None,
             "ingredients": ingredients,
             "results": results,
             "hidden": recipe.get("hidden", False),
@@ -194,15 +200,17 @@ def build_recipe_catalog(raw: dict) -> dict:
             "itemOrder": display_cat["itemOrder"],
         })
 
-    RECIPES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(RECIPES_CACHE_PATH, "w", encoding="utf-8") as f:
+    recipes_path = profile_dir / "recipes.json"
+    recipes_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(recipes_path, "w", encoding="utf-8") as f:
         json.dump(catalog, f, ensure_ascii=False, indent=2)
 
     return {"total": len(catalog)}
 
 
-def get_cached_recipes() -> list[dict]:
-    if not RECIPES_CACHE_PATH.exists():
+def get_cached_recipes(profile_dir: Path) -> list[dict]:
+    recipes_path = profile_dir / "recipes.json"
+    if not recipes_path.exists():
         return []
-    with open(RECIPES_CACHE_PATH, encoding="utf-8") as f:
+    with open(recipes_path, encoding="utf-8") as f:
         return json.load(f)

@@ -5,6 +5,12 @@
 // внутри этого файла и всех модулей, которые он реально исполняет,
 // используются явные ".ts"-расширения в относительных импортах
 // (tsconfig.app.json: allowImportingTsExtensions — это не ломает Vite).
+// Этот файл — единственный, которому реально нужен глобальный `process`
+// (он не попадает в браузерный Vite-бандл, только запускается напрямую
+// Node'ом) — ссылка на типы Node ограничена этим файлом, а не добавлена
+// в tsconfig.app.json целиком, чтобы не протащить node-глобалы в код
+// браузера.
+/// <reference types="node" />
 import { encodeBlueprintString } from './encode.ts'
 import { decodeBlueprintString } from './decode.ts'
 import { decodeDirection, encodeDirection } from './direction.ts'
@@ -12,7 +18,8 @@ import { packVersion, DEFAULT_EXPORT_VERSION } from './version.ts'
 import { blueprintDataToEntities, entitiesToBlueprintData } from './convert.ts'
 import type { BlueprintData } from '../../types/blueprint.ts'
 import type { CatalogEntity } from '../../store/entityCatalogStore.ts'
-import type { EntityDirection, PlacedEntity } from '../../store/canvasStore.ts'
+import type { EntityDirection } from '../../store/canvasStore.ts'
+import { toSlot } from '../modules.ts'
 
 let failed = 0
 let passed = 0
@@ -53,6 +60,10 @@ function fakeCatalogEntry(typeId: string, width: number, height: number, overrid
     height,
     craftingCategories: null,
     moduleSlots: 0,
+    allowedEffects: [],
+    allowedModuleCategories: null,
+    connectors: null,
+    circuitWireMaxDistance: null,
     craftingSpeed: null,
     miningSpeed: null,
     researchingSpeed: null,
@@ -256,31 +267,245 @@ console.log('=== 4. Конвертация позиций (1x1, 2x2, 3x3, 2x1, �
   )
 }
 
-console.log('=== 5. Модули (1.1 словарь и 2.0 массив -> всегда 2.0 на экспорте) ===')
+console.log('=== 5. Модули (слоты, 1.1/2.0 -> всегда 2.0 на экспорте, остальные items не теряются) ===')
 {
-  const catalog = new Map<string, CatalogEntity>([['asm', fakeCatalogEntry('asm', 96, 96)]])
+  const catalog = new Map<string, CatalogEntity>([['asm', fakeCatalogEntry('asm', 96, 96, { moduleSlots: 4, type: 'assembling-machine' })]])
   const V11 = packVersion(1, 1, 110)
+  const V20 = packVersion(2, 0, 28)
 
+  // 1.1: словарь имя->количество; 2 модуля раскладываются по двум слотам,
+  // уголь (не модуль) остаётся как есть.
   const data11: BlueprintData = {
     item: 'blueprint',
     version: V11,
+    entities: [
+      { entity_number: 1, name: 'asm', position: { x: 1.5, y: 1.5 }, items: { 'productivity-module-2': 2, coal: 5 } },
+    ],
+  }
+  const imported = blueprintDataToEntities(data11, 1, catalog)
+  assert(deepEqual(imported.entities[0].modules, [{ name: 'productivity-module-2' }, { name: 'productivity-module-2' }, null, null]), '1.1: модули разложены по слотам')
+  assert(Array.isArray(imported.entities[0].extra?.items) && (imported.entities[0].extra?.items as unknown[]).length === 1, '1.1: топливо (не модуль) сохранено в extra.items')
+
+  const { data: exported } = entitiesToBlueprintData(imported.entities, { label: 'x', catalogByTypeId: catalog })
+  const exportedItems = exported.entities?.[0]?.items as { id: { name: string }; items: { in_inventory: { inventory: unknown; stack: number }[] } }[]
+  assert(Array.isArray(exportedItems), 'на экспорте items — массив (формат 2.0), даже если импортировали из 1.1')
+  const prod = exportedItems.find((i) => i.id.name === 'productivity-module-2')
+  assert(deepEqual(prod?.items.in_inventory.map((x) => x.stack), [0, 1]), 'модули экспортированы со stack = индекс слота')
+  assert(prod?.items.in_inventory[0].inventory === 4, 'inventory сборщика на экспорте — 4 (crafter_modules)')
+  assert(exportedItems.some((i) => i.id.name === 'coal'), 'топливо не потеряно при экспорте')
+
+  // 2.0: числовой inventory, качество, модуль вне слотов, топливо
+  const data20: BlueprintData = {
+    item: 'blueprint',
+    version: V20,
     entities: [
       {
         entity_number: 1,
         name: 'asm',
         position: { x: 1.5, y: 1.5 },
-        items: { 'productivity-module-2': 2 },
+        items: [
+          { id: { name: 'speed-module-3', quality: 'rare' }, items: { in_inventory: [{ inventory: 4, stack: 1 }, { inventory: 4, stack: 3 }] } },
+          { id: { name: 'efficiency-module' }, items: { in_inventory: [{ inventory: 4, stack: 9 }] } },
+          { id: { name: 'coal' }, items: { in_inventory: [{ inventory: 1, stack: 0, count: 5 }] } },
+        ],
       },
     ],
   }
-  const imported = blueprintDataToEntities(data11, 1, catalog)
-  assert((imported.entities[0].modules?.length ?? 0) === 1, '1.1 словарь модулей распознан (1 стек)')
-  assert(imported.entities[0].modules?.[0]?.name === 'productivity-module-2', 'имя модуля сохранено')
-  assert(imported.entities[0].modules?.[0]?.count === 2, 'количество модуля сохранено (count=2)')
+  const imp20 = blueprintDataToEntities(data20, 1, catalog)
+  const e20 = imp20.entities[0]
+  assert(deepEqual(e20.modules, [null, { name: 'speed-module-3', quality: 'rare' }, null, { name: 'speed-module-3', quality: 'rare' }]), '2.0: stack -> индекс слота (+ качество в слоте)')
+  assert(e20.moduleExtra?.inventory === 4, '2.0: числовой inventory сохранён как есть')
+  const rest20 = e20.extra?.items as { id: { name: string } }[]
+  assert(rest20?.length === 2 && rest20.some((i) => i.id.name === 'coal') && rest20.some((i) => i.id.name === 'efficiency-module'), '2.0: топливо и модуль вне слотов сохранены')
+  const out20 = entitiesToBlueprintData(imp20.entities, { label: 'x', catalogByTypeId: catalog, includeQuality: true }).data.entities?.[0]?.items as { id: { name: string; quality?: string }; items: { in_inventory: { inventory: unknown; stack: number }[] } }[]
+  const speed = out20.find((i) => i.id.name === 'speed-module-3')
+  assert(speed?.id.quality === 'rare' && deepEqual(speed?.items.in_inventory, [{ inventory: 4, stack: 1 }, { inventory: 4, stack: 3 }]), '2.0: round-trip модулей без потерь')
+  assert(out20.length === 3, '2.0: после round-trip те же 3 записи items')
+  const again = blueprintDataToEntities(entitiesToBlueprintData(imp20.entities, { label: 'x', catalogByTypeId: catalog, includeQuality: true }).data, 1, catalog)
+  assert(deepEqual(again.entities[0].modules, e20.modules), 'импорт -> экспорт -> импорт: модули те же')
 
-  const { data: exported } = entitiesToBlueprintData(imported.entities, { label: 'x', catalogByTypeId: catalog })
-  const exportedItems = exported.entities?.[0]?.items
-  assert(Array.isArray(exportedItems), 'на экспорте items — массив (формат 2.0), даже если импортировали из 1.1')
+  // сущность без слотов: модули не теряются, уходят в extra.items
+  const noSlots = new Map<string, CatalogEntity>([['asm', fakeCatalogEntry('asm', 96, 96)]])
+  const impNo = blueprintDataToEntities(data20, 1, noSlots)
+  assert(impNo.entities[0].modules === undefined && (impNo.entities[0].extra?.items as unknown[]).length === 3, 'нет слотов: всё сохранено в extra.items')
+}
+
+console.log('=== 6. Качество (quality): entity.quality, recipe_quality, items id.quality ===')
+{
+  const catalog = new Map<string, CatalogEntity>([
+    ['asm', fakeCatalogEntry('asm', 96, 96, { moduleSlots: 2, type: 'assembling-machine' })],
+    ['chest', fakeCatalogEntry('chest', 32, 32, { type: 'container' })],
+  ])
+  const data: BlueprintData = {
+    item: 'blueprint',
+    version: packVersion(2, 0, 28),
+    entities: [
+      {
+        entity_number: 1, name: 'asm', position: { x: 1.5, y: 1.5 },
+        recipe: 'iron-gear-wheel', quality: 'rare', recipe_quality: 'epic', future_field: 42,
+        items: [{ id: { name: 'speed-module-3', quality: 'legendary' }, items: { in_inventory: [{ inventory: 4, stack: 0 }] } }],
+      },
+      { entity_number: 2, name: 'chest', position: { x: 4.5, y: 0.5 }, quality: 'uncommon' },
+      { entity_number: 3, name: 'chest', position: { x: 5.5, y: 0.5 }, quality: 'normal' },
+    ],
+  }
+  const imp = blueprintDataToEntities(data, 1, catalog)
+  const [asm, chest, normalChest] = imp.entities
+  // 1) entity.quality
+  assert(asm.quality === 'rare' && chest.quality === 'uncommon', 'entity: quality прочитан в PlacedEntity.quality')
+  assert(normalChest.quality === undefined, 'entity: quality=normal -> поле отсутствует в модели')
+  assert(asm.extra?.quality === undefined && asm.extra?.future_field === 42, 'entity: quality не дублируется в extra, неизвестные поля сохранены')
+  // 2) recipe_quality
+  assert(asm.recipeQuality === 'epic', 'recipe_quality прочитан в PlacedEntity.recipeQuality')
+  // 3) items id.quality
+  assert(deepEqual(asm.modules?.[0], { name: 'speed-module-3', quality: 'legendary' }), 'items: id.quality прочитан в слот модуля')
+
+  const out = entitiesToBlueprintData(imp.entities, { label: 'q', catalogByTypeId: catalog, includeQuality: true }).data.entities!
+  const oAsm = out.find((e) => e.name === 'asm')!
+  const chests = out.filter((e) => e.name === 'chest')
+  assert(oAsm.quality === 'rare', 'экспорт entity: quality=rare записан')
+  assert(chests.some((c) => c.quality === 'uncommon') && chests.some((c) => c.quality === undefined && !('quality' in c)), 'экспорт entity: у normal поле quality отсутствует')
+  assert(oAsm.recipe_quality === 'epic', 'экспорт: recipe_quality=epic записан')
+  const oItems = oAsm.items as { id: { name: string; quality?: string } }[]
+  assert(oItems[0].id.quality === 'legendary', 'экспорт items: id.quality=legendary записан')
+  assert(oAsm.future_field === 42, 'экспорт: неизвестное поле future_field не потеряно')
+  const round = blueprintDataToEntities(entitiesToBlueprintData(imp.entities, { label: 'q', catalogByTypeId: catalog, includeQuality: true }).data, 1, catalog)
+  assert(round.entities[0].quality === 'rare' && round.entities[0].recipeQuality === 'epic' && (toSlot(round.entities[0].modules?.[0])?.quality === 'legendary'), 'импорт -> экспорт -> импорт: три вида качества сохранились')
+
+  // Профиль без quality: поля качества не пишутся вообще
+  const plain = entitiesToBlueprintData(imp.entities, { label: 'q', catalogByTypeId: catalog }).data.entities!
+  const pAsm = plain.find((e) => e.name === 'asm')!
+  const pItems = pAsm.items as { id: { quality?: string } }[]
+  assert(!('quality' in pAsm) && !('recipe_quality' in pAsm) && !('quality' in pItems[0].id), 'без includeQuality: ни quality, ни recipe_quality, ни id.quality не пишутся')
+  assert(!plain.some((e) => 'quality' in e), 'без includeQuality: ни у одной сущности нет поля quality')
+}
+
+console.log('=== 7. Плитки (tiles): координаты, импорт/экспорт, неизвестные имена ===')
+{
+  const catalog = new Map<string, CatalogEntity>([['chest', fakeCatalogEntry('chest', 32, 32, { type: 'container' })]])
+  const data: BlueprintData = {
+    item: 'blueprint',
+    version: packVersion(2, 0, 28),
+    entities: [{ entity_number: 1, name: 'chest', position: { x: 0.5, y: 0.5 } }],
+    tiles: [
+      { name: 'concrete', position: { x: 0, y: 0 } },
+      { name: 'stone-path', position: { x: -2, y: 3 } },
+      { name: 'some-mod-tile', position: { x: 5, y: -1 } },
+    ],
+  }
+  const imp = blueprintDataToEntities(data, 1, catalog)
+  assert(Object.keys(imp.tiles).length === 3, 'импорт: прочитаны все 3 плитки')
+  assert(imp.tiles['0,0'] === 'concrete' && imp.tiles['-2,3'] === 'stone-path', 'импорт: ключ "x,y" = целые координаты ячейки')
+  assert(imp.tiles['5,-1'] === 'some-mod-tile', 'импорт: плитка с неизвестным именем сохранена')
+  // согласованность с сущностями: сундук 1x1 в position (0.5,0.5) стоит в пикселях (0,0) = ячейка (0,0)
+  assert(imp.entities[0].x === 0 && imp.entities[0].y === 0, 'сущность с центром (0.5,0.5) занимает ячейку (0,0) — ту же, что плитка (0,0)')
+  assert(imp.meta.tiles === undefined, 'meta.tiles больше не используется (плитки живут в модели)')
+
+  const exp = entitiesToBlueprintData(imp.entities, { label: 't', catalogByTypeId: catalog, tiles: imp.tiles }).data
+  // нормализация: минимум по сущностям И плиткам -> (-2,-1); сдвиг на целое число тайлов
+  const expTiles = exp.tiles ?? []
+  assert(expTiles.length === 3, 'экспорт: 3 плитки записано')
+  assert(expTiles.some((t) => t.name === 'concrete' && t.position.x === 2 && t.position.y === 1), 'экспорт: плитка (0,0) сдвинута на (2,1) вместе с началом координат')
+  assert(expTiles.some((t) => t.name === 'some-mod-tile'), 'экспорт: плитка с неизвестным именем не потеряна')
+  const ex = exp.entities![0].position
+  assert(ex.x === 2.5 && ex.y === 1.5, 'экспорт: сущность сдвинута на то же смещение (2,1) — взаимное положение сохранено')
+  const back = blueprintDataToEntities(exp, 1, catalog)
+  const dx = back.entities[0].x - imp.entities[0].x
+  const dy = back.entities[0].y - imp.entities[0].y
+  const shifted = Object.entries(back.tiles).every(([k, v]) => {
+    const [x, y] = k.split(',').map(Number)
+    return imp.tiles[`${x - dx / 32},${y - dy / 32}`] === v
+  })
+  assert(Object.keys(back.tiles).length === 3 && shifted, 'импорт -> экспорт -> импорт: те же плитки в том же положении относительно сущности')
+
+  // только плитки, без сущностей
+  const onlyTiles = entitiesToBlueprintData([], { label: 't', catalogByTypeId: catalog, tiles: { '3,4': 'concrete' } }).data
+  assert(onlyTiles.tiles?.length === 1 && onlyTiles.tiles[0].position.x === 0 && onlyTiles.tiles[0].position.y === 0, 'экспорт только плиток (без сущностей) работает')
+  // без tiles в опциях и без meta — поля tiles нет вообще
+  const noTiles = entitiesToBlueprintData(imp.entities, { label: 't', catalogByTypeId: catalog }).data
+  assert(!('tiles' in noTiles), 'нет слоя плиток — поле tiles не пишется')
+}
+
+console.log('=== 8. Схемная сеть: провода и control_behavior четырёх комбинаторов ===')
+{
+  const mk = (id: string, type: string, w: number, h: number) => [id, fakeCatalogEntry(id, w, h, { type })] as const
+  const catalog = new Map<string, CatalogEntity>([
+    mk('arithmetic-combinator', 'arithmetic-combinator', 32, 64),
+    mk('decider-combinator', 'decider-combinator', 32, 64),
+    mk('constant-combinator', 'constant-combinator', 32, 32),
+    mk('selector-combinator', 'selector-combinator', 32, 64),
+    mk('small-electric-pole', 'electric-pole', 32, 32),
+    mk('small-lamp', 'lamp', 32, 32),
+  ])
+  const arithmetic = {
+    arithmetic_conditions: {
+      first_signal: { name: 'signal-A', type: 'virtual' }, operation: '+', second_constant: 5,
+      output_signal: { name: 'signal-B', type: 'virtual' },
+      first_signal_networks: { red: true, green: false }, second_signal_networks: { red: false, green: true },
+    },
+  }
+  const decider = {
+    decider_conditions: {
+      conditions: [
+        { first_signal: { name: 'iron-plate' }, comparator: '>', constant: 100, compare_type: 'or', first_signal_networks: { red: true, green: true } },
+        { first_signal: { name: 'copper-plate', quality: 'rare' }, comparator: '<=', second_signal: { name: 'signal-C', type: 'virtual' }, compare_type: 'and' },
+      ],
+      outputs: [{ signal: { name: 'signal-everything', type: 'virtual' }, copy_count_from_input: true, networks: { red: true, green: false } }, { signal: { name: 'signal-D', type: 'virtual' }, constant: 3 }],
+    },
+  }
+  const constant = {
+    sections: { sections: [{ index: 1, filters: [{ index: 1, name: 'iron-plate', quality: 'normal', comparator: '=', count: 50 }, { index: 2, type: 'virtual', name: 'signal-A', count: -3 }], multiplier: 2, active: true }] },
+    is_on: false,
+  }
+  const selector = { operation: 'select', select_max: true, index_signal: { name: 'signal-I', type: 'virtual' }, index_constant: 2, random_update_interval: 30, quality_filter: { quality: 'rare', comparator: '>=' } }
+  const bp: BlueprintData = {
+    item: 'blueprint', version: packVersion(2, 0, 28),
+    entities: [
+      { entity_number: 1, name: 'arithmetic-combinator', position: { x: 1, y: 2 }, direction: 4, control_behavior: arithmetic },
+      { entity_number: 2, name: 'decider-combinator', position: { x: 3, y: 2 }, direction: 4, control_behavior: decider },
+      { entity_number: 3, name: 'constant-combinator', position: { x: 0.5, y: 0.5 }, control_behavior: constant },
+      { entity_number: 4, name: 'selector-combinator', position: { x: 5, y: 2 }, direction: 4, control_behavior: selector },
+      { entity_number: 5, name: 'small-electric-pole', position: { x: 0.5, y: 4.5 } },
+      { entity_number: 6, name: 'small-electric-pole', position: { x: 3.5, y: 4.5 } },
+      { entity_number: 7, name: 'small-lamp', position: { x: 6.5, y: 4.5 }, control_behavior: { circuit_enabled: true, circuit_condition: { first_signal: { name: 'signal-A', type: 'virtual' }, comparator: '>', constant: 0 } } },
+    ],
+    wires: [
+      [5, 1, 6, 1], // красный: столб-столб
+      [5, 2, 7, 2], // зелёный: столб-лампа
+      [1, 5, 2, 3], // красный: выход арифм. -> вход decider
+      [3, 2, 1, 4], // зелёный: константа -> вход арифм.
+      [5, 5, 6, 5], // медь столбов (pole_copper) — не схемный провод
+    ],
+  }
+  const imp = blueprintDataToEntities(bp, 1, catalog)
+  const byName = (n: string) => imp.entities.find((e) => e.typeId === n)!
+  assert(imp.wires.length === 4, 'импорт: 4 схемных провода (медь не считается)')
+  const red = imp.wires.filter((w) => w.color === 'red').length
+  assert(red === 2 && imp.wires.length - red === 2, 'импорт: 2 красных и 2 зелёных')
+  const comboWire = imp.wires.find((w) => w.a.connector === 'output' || w.b.connector === 'output')
+  assert(!!comboWire && [comboWire.a.connector, comboWire.b.connector].sort().join() === 'input,output', 'импорт: провод комбинатор output -> input распознан')
+  assert(imp.meta.wires?.length === 1 && imp.meta.wires[0][1] === 5, 'импорт: медь столбов сохранена в passthrough как есть')
+  assert(deepEqual(byName('arithmetic-combinator').controlBehavior, arithmetic), 'импорт: control_behavior арифметического')
+  assert(deepEqual(byName('decider-combinator').controlBehavior, decider), 'импорт: control_behavior decider (2 условия + 2 выхода)')
+  assert(deepEqual(byName('constant-combinator').controlBehavior, constant), 'импорт: control_behavior constant (секции, множитель, is_on)')
+  assert(deepEqual(byName('selector-combinator').controlBehavior, selector), 'импорт: control_behavior selector')
+  assert(byName('small-lamp').controlBehavior !== undefined && byName('small-lamp').extra?.control_behavior === undefined, 'импорт: control_behavior лампы сохранён как есть (без окна настройки)')
+
+  const out = entitiesToBlueprintData(imp.entities, { label: 'c', catalogByTypeId: catalog, wires: imp.wires, meta: imp.meta }).data
+  const normalize = (ws: number[][]) => ws.map((w) => (w[0] > w[2] || (w[0] === w[2] && w[1] > w[3]) ? [w[2], w[3], w[0], w[1]] : w)).map((w) => w.join()).sort()
+  assert(deepEqual(normalize(out.wires as number[][]), normalize(bp.wires as number[][])), 'экспорт: wires совпадают с исходными (включая медь), с точностью до порядка концов')
+  const outByName = (n: string) => out.entities!.find((e) => e.name === n)!
+  assert(deepEqual(outByName('arithmetic-combinator').control_behavior, arithmetic), 'экспорт: control_behavior арифметического без потерь')
+  assert(deepEqual(outByName('decider-combinator').control_behavior, decider), 'экспорт: control_behavior decider без потерь')
+  assert(deepEqual(outByName('constant-combinator').control_behavior, constant), 'экспорт: control_behavior constant без потерь')
+  assert(deepEqual(outByName('selector-combinator').control_behavior, selector), 'экспорт: control_behavior selector без потерь')
+  assert(deepEqual(outByName('small-lamp').control_behavior, bp.entities![6].control_behavior), 'экспорт: control_behavior лампы без потерь')
+  const again = blueprintDataToEntities(out, 1, catalog)
+  assert(again.wires.length === 4 && deepEqual(again.entities.map((e) => e.controlBehavior), imp.entities.map((e) => e.controlBehavior)), 'импорт -> экспорт -> импорт: провода и настройки те же')
+  // подмножество (выделение): внешние провода отбрасываются, внутренние остаются
+  const subset = imp.entities.filter((e) => e.typeId.endsWith('pole') || e.typeId === 'small-lamp')
+  const sub = entitiesToBlueprintData(subset, { label: 's', catalogByTypeId: catalog, wires: imp.wires }).data
+  assert((sub.wires?.length ?? 0) === 2, 'экспорт подмножества: остались только провода между выбранными (2)')
 }
 
 console.log(`\n=== Итого: ${passed} OK, ${failed} FAIL ===`)

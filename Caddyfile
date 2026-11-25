@@ -1,0 +1,60 @@
+# Адрес сайта берётся из PUBLIC_DOMAIN (см. docker-compose.yml/.env). Для
+# домена Caddy сам получает и продлевает сертификат Let's Encrypt
+# (порты 80/443 должны быть доступны снаружи).
+{$PUBLIC_DOMAIN:factory-planner.duckdns.org} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# API -> backend (внутри сети compose).
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	# Несколько иконок-заглушек панели баланса лежат в public/assets/
+	# фронта (см. BalancePanel.tsx) — они едут в собранный фронт, а не в
+	# контент; этот блок обязан стоять ВЫШЕ общего /assets/*.
+	handle /assets/icons-cropped/* {
+		root * /srv/frontend
+		header Cache-Control "public, max-age=86400"
+		file_server
+	}
+
+	# Иконки и спрайты каталога раздаёт сам Caddy прямо с тома контента —
+	# без обращения к Python (имена содержат мод+путь, содержимое не
+	# меняется между сборками контента без смены файла — кэш на сутки;
+	# при обновлении контента браузеры подхватят изменения в течение дня).
+	handle_path /assets/* {
+		root * /content/sprites
+		header Cache-Control "public, max-age=86400"
+		file_server
+	}
+	handle_path /tile-assets/* {
+		root * /content/tile_sprites
+		header Cache-Control "public, max-age=86400"
+		file_server
+	}
+	handle_path /entity-assets/* {
+		root * /content/entity_sprites
+		header Cache-Control "public, max-age=86400"
+		file_server
+	}
+
+	# Собранный фронт. Бандл лежит в /static/ (vite assetsDir) с хешами в
+	# именах — кэшируем надолго; index.html — никогда (SPA-фоллбек).
+	handle /static/* {
+		root * /srv/frontend
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+	handle {
+		root * /srv/frontend
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

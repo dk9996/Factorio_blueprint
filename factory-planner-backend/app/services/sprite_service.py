@@ -5,70 +5,149 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageChops
 from app.config import settings
+from app.content.paths import (
+    directional_sprite_frames_path,
+    entity_sprite_frames_path,
+    entity_sprites_dir,
+    fluid_overlay_frames_path,
+    pipe_sprite_frames_path,
+    profiles_cache_root,
+    sprites_dir,
+    tile_sprite_map_path,
+    tile_sprites_dir,
+)
+from app.content.icons import icon_url
 from app.services.mod_resolver import build_mod_sources
 
 
 ICON_SIZE = 64
-SPRITES_CACHE_DIR = Path("data/cache/sprites")
+# Общее (не по-профильное) хранилище — см. app/content/paths.py. settings
+# не меняется после старта процесса, поэтому вычислить один раз при
+# импорте безопасно (та же конвенция, что у остальных settings-based
+# констант в проекте).
+SPRITES_CACHE_DIR = sprites_dir()
 
 
 from app.services.dump_service import get_icon_size_map
 
-def crop_all_icons(force: bool = False) -> dict:
+def crop_all_icons(profile_dir: Path, force: bool = False) -> dict:
+    """
+    profile_dir — чей icon_sizes.json использовать как подсказку точных
+    размеров кадра при кропе (сам вывод — ОБЩЕЕ хранилище SPRITES_CACHE_DIR,
+    не по-профильное).
+
+    Ключ файла в хранилище = мод + относительный путь (см. app/content/
+    icons.py): sprites/base/graphics/icons/inserter.png. Плоских basename
+    больше нет — одноимённые файлы из разных паков/папок не перезаписывают
+    друг друга, а icon_sizes.json привязан к тому же ключу.
+    """
     SPRITES_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    icon_sizes = get_icon_size_map()  # filename -> точный icon_size из dump, если известен
+    # icon_key -> точный icon_size из dump. Ключи — полные пути, поэтому
+    # размеры разных профилей можно безопасно объединять (иконки DLC-профиля
+    # не знает base-дамп): приоритет у запрошенного профиля.
+    icon_sizes: dict[str, int] = {}
+    for other in profiles_cache_root().glob("*"):
+        if other.is_dir() and other != profile_dir:
+            icon_sizes.update(get_icon_size_map(other))
+    icon_sizes.update(get_icon_size_map(profile_dir))
 
     processed = 0
     skipped = 0
     errors: list[str] = []
+    produced: set[Path] = set()
 
-    for src_dir in _base_and_core_icon_dirs():
+    def _out_path(key: str) -> Path | None:
+        out = (SPRITES_CACHE_DIR / key).resolve()
+        # не даём ключу выйти за пределы хранилища
+        if SPRITES_CACHE_DIR.resolve() not in out.parents:
+            return None
+        return out
+
+    for src_dir, pak_root in _base_and_core_icon_dirs():
         for png_path in src_dir.rglob("*.png"):
-            out_path = SPRITES_CACHE_DIR / png_path.name
+            key = f"{pak_root.name}/{png_path.relative_to(pak_root).as_posix()}"
+            out_path = _out_path(key)
+            if out_path is None:
+                continue
+            produced.add(out_path)
             if out_path.exists() and not force:
                 skipped += 1
                 continue
             try:
-                known_size = icon_sizes.get(png_path.name)
-                _crop_and_save(png_path.read_bytes(), out_path, known_size)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                _crop_and_save(png_path.read_bytes(), out_path, icon_sizes.get(key))
                 processed += 1
             except Exception as e:
-                errors.append(f"{png_path.name}: {e}")
+                errors.append(f"{key}: {e}")
 
-    mod_sources = build_mod_sources()
-    for mod_name, source in mod_sources.items():
-        png_files = source.list_png_files()
-        for rel_path in png_files:
-            # КРИТИЧНО: берём только файлы из папок с "icon" в пути —
-            # иначе entity-spritesheet с тем же именем файла, что и
-            # настоящая иконка (частый случай у модов), перезапишет
-            # правильную иконку в кэше случайным кадром анимации
-            if "icon" not in rel_path.lower():
-                continue
-
-            filename = Path(rel_path).name
-            out_path = SPRITES_CACHE_DIR / filename
-            if out_path.exists() and not force:
-                skipped += 1
-                continue
-            try:
-                data = source.read_bytes(rel_path)
-                if data is None:
+    mods_scanned = 0
+    # Сторонние моды выключены по умолчанию (MODS_ENABLED=false) — код не
+    # удалён (задел под реальную поддержку модов позже), но без явного
+    # включения флага папка модов (может быть замусорена личным загрузочным
+    # списком пользователя, см. отчёт по задаче) не сканируется вовсе.
+    if settings.mods_enabled:
+        mod_sources = build_mod_sources()
+        mods_scanned = len(mod_sources)
+        for mod_name, source in mod_sources.items():
+            png_files = source.list_png_files()
+            for rel_path in png_files:
+                # Берём только файлы из папок с "icon" в пути — иначе
+                # entity-spritesheet мода попадёт в хранилище иконок. Ключ
+                # теперь включает полный путь, так что перезаписи чужих
+                # файлов это уже не вызывает, но лишний мусор не нужен.
+                if "icon" not in rel_path.lower():
                     continue
-                known_size = icon_sizes.get(filename)
-                _crop_and_save(data, out_path, known_size)
-                processed += 1
-            except Exception as e:
-                errors.append(f"[{mod_name}] {filename}: {e}")
+
+                key = f"{mod_name}/{rel_path.replace(chr(92), '/')}"
+                out_path = _out_path(key)
+                if out_path is None:
+                    continue
+                produced.add(out_path)
+                if out_path.exists() and not force:
+                    skipped += 1
+                    continue
+                try:
+                    data = source.read_bytes(rel_path)
+                    if data is None:
+                        continue
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    _crop_and_save(data, out_path, icon_sizes.get(key))
+                    processed += 1
+                except Exception as e:
+                    errors.append(f"[{mod_name}] {key}: {e}")
+
+    removed = _cleanup_stale_icons(produced, prune_nested=force)
 
     return {
         "processed": processed,
         "skipped": skipped,
         "errors": errors,
-        "mods_scanned": len(mod_sources),
+        "mods_scanned": mods_scanned,
         "known_icon_sizes": len(icon_sizes),
+        "removed_stale": removed,
     }
+
+
+def _cleanup_stale_icons(produced: set[Path], prune_nested: bool) -> int:
+    """
+    Удаляет устаревшие файлы иконок: старые плоские basename-файлы прямо в
+    корне sprites/ (всегда), а при полной пересборке (force) — ещё и
+    вложенные файлы, которых эта сборка не порождала.
+    """
+    removed = 0
+    root = SPRITES_CACHE_DIR.resolve()
+    for f in list(root.rglob("*")):
+        if not f.is_file():
+            continue
+        flat_legacy = f.parent == root
+        if flat_legacy or (prune_nested and f.resolve() not in produced):
+            f.unlink()
+            removed += 1
+    for d in sorted((p for p in root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+        if not any(d.iterdir()):
+            d.rmdir()
+    return removed
 
 
 def _crop_and_save(image_bytes: bytes, out_path: Path, known_size: int | None = None):
@@ -111,27 +190,34 @@ def _crop_and_save(image_bytes: bytes, out_path: Path, known_size: int | None = 
         resized = img.resize((target, target), Image.LANCZOS)
         resized.save(out_path)
 
-def _base_and_core_icon_dirs() -> list[Path]:
+_OFFICIAL_CONTENT_PAKS = ("base", "core", "elevated-rails", "quality", "space-age")
+
+
+def _base_and_core_icon_dirs() -> list[tuple[Path, Path]]:
+    """
+    Все официальные паки безусловно (не только "активный" профиль) — их PNG
+    физически лежат в инсталляции игры независимо от того, включены ли они
+    в каком-то конкретном профиле (см. app/content/profile.py), и кладутся
+    в ОБЩЕЕ хранилище SPRITES_CACHE_DIR с ключом мод+путь (см. app/content/icons.py) — поэтому
+    проще и безопаснее один раз просканировать всё, чем условно выбирать
+    подмножество папок под текущий профиль (см. отчёт по задаче).
+    """
     dirs = []
-    base_icons = settings.factorio_game_path / "data" / "base" / "graphics" / "icons"
-    if base_icons.exists():
-        dirs.append(base_icons)
-    base_item_group = settings.factorio_game_path / "data" / "base" / "graphics" / "item-group"
-    if base_item_group.exists():
-        dirs.append(base_item_group)
-    core_icons = settings.factorio_game_path / "data" / "core" / "graphics" / "icons"
-    if core_icons.exists():
-        dirs.append(core_icons)
+    for pak in _OFFICIAL_CONTENT_PAKS:
+        for sub in ("graphics/icons", "graphics/item-group"):
+            p = settings.factorio_game_path / "data" / pak / sub
+            if p.exists():
+                dirs.append((p, settings.factorio_game_path / "data" / pak))
     return dirs
 
 
-def sprite_url(icon_filename: str) -> str:
-    return f"/assets/{icon_filename}"
+def sprite_url(icon_key: str) -> str:
+    return icon_url(icon_key)
 
 from app.services.entity_sprite_service import get_entity_sprite_map
 from app.services.mod_resolver import build_mod_sources
 
-ENTITY_SPRITES_OUTPUT_DIR = Path("data/cache/entity_sprites")
+ENTITY_SPRITES_OUTPUT_DIR = entity_sprites_dir()
 
 
 def _find_source_file(filename: str) -> bytes | None:
@@ -497,7 +583,7 @@ def crop_entity_sprites(force: bool = False) -> dict:
     errors: list[str] = []
     frame_meta: dict[str, dict] = {}
 
-    frames_meta_path = ENTITY_SPRITES_OUTPUT_DIR.parent / "entity_sprite_frames.json"
+    frames_meta_path = entity_sprite_frames_path()
     if frames_meta_path.exists() and not force:
         try:
             frame_meta = json.loads(frames_meta_path.read_text(encoding="utf-8"))
@@ -657,9 +743,9 @@ def crop_entity_sprites(force: bool = False) -> dict:
 
 from app.services.entity_sprite_service import get_pipe_sprite_variant_map, get_fluid_overlay_map, get_directional_sprite_map
 
-PIPE_SPRITE_FRAMES_PATH = ENTITY_SPRITES_OUTPUT_DIR.parent / "entity_pipe_sprite_frames.json"
-FLUID_OVERLAY_FRAMES_PATH = ENTITY_SPRITES_OUTPUT_DIR.parent / "entity_fluid_overlay_frames.json"
-DIRECTIONAL_SPRITE_FRAMES_PATH = ENTITY_SPRITES_OUTPUT_DIR.parent / "entity_directional_sprite_frames.json"
+PIPE_SPRITE_FRAMES_PATH = pipe_sprite_frames_path()
+FLUID_OVERLAY_FRAMES_PATH = fluid_overlay_frames_path()
+DIRECTIONAL_SPRITE_FRAMES_PATH = directional_sprite_frames_path()
 
 
 def _render_single_leaf_png(leaf: dict, out_path: Path) -> dict | str:
@@ -949,3 +1035,103 @@ def crop_directional_sprites(force: bool = False) -> dict:
         "errors": errors[:30],
         "total_errors": len(errors),
     }
+
+
+# --- Текстуры плиток (tile) ---------------------------------------------------
+# Хранилище tile_sprites/<имя плитки>/<n>.png + tile_sprites.json (общее для
+# всех профилей, merge-write, ключ — имя плитки, никакого basename). Игра
+# хранит текстуру плитки двумя способами:
+#  * variants.main[] с size=1 — лист из count вариантов 1x1 (картинки в ряд,
+#    line_length/y — как у остальных спрайтов); режем на count файлов 32x32;
+#  * variants.material_background — count крупных вариантов (у бетона 8 штук
+#    по 8x8 тайлов): каждый вариант сохраняется целиком (cols x rows тайлов,
+#    по 32 px на тайл), а отрисовка берёт нужную клетку по (x mod cols,
+#    y mod rows) — так в игре "вшит" бетон, повторяя рисунок по миру.
+TILE_PX = 32
+
+
+def _tile_picture_info(raw_tile: dict) -> list[tuple[str, dict, str]]:
+    """Кандидаты (режим, описание, путь картинки): сначала main с size=1, затем
+    material_background."""
+    variants = raw_tile.get("variants") or {}
+    result: list[tuple[str, dict, str]] = []
+    for entry in variants.get("main") or []:
+        # *-dummy.png — заглушки движка (foundation), не настоящая текстура
+        if isinstance(entry, dict) and entry.get("size", 1) == 1 and entry.get("picture") and "dummy" not in entry["picture"]:
+            result.append(("main", entry, entry["picture"]))
+            break
+    mb = variants.get("material_background")
+    if isinstance(mb, dict) and mb.get("picture"):
+        result.append(("bg", mb, mb["picture"]))
+    return result
+
+
+def _crop_tile_variants(raw_tile: dict, out_dir: Path) -> dict | None:
+    for mode, desc, picture in _tile_picture_info(raw_tile):
+        data = _find_source_file(picture)
+        if not data:
+            continue
+        with Image.open(BytesIO(data)) as img:
+            img = img.convert("RGBA")
+            count = int(desc.get("count", 1))
+            scale = float(desc.get("scale", 1))
+            px_tile = round(TILE_PX / scale)  # пикселей оригинала на один тайл
+            line_length = int(desc.get("line_length", count))
+            var_tiles = int(desc.get("size", 1)) if mode == "main" else 0
+            if mode == "bg":
+                var_w = img.width // max(1, min(count, line_length))
+                var_tiles = max(1, var_w // px_tile)
+            var_px = var_tiles * px_tile
+            x0 = int(desc.get("x", 0))
+            y0 = int(desc.get("y", 0))
+            rows = -(-count // line_length)
+            # размер картинки обязан соответствовать описанию, иначе это
+            # заглушка (например foundation-dummy.png) — пробуем следующий способ
+            if x0 + var_px * min(count, line_length) > img.width or y0 + var_px * rows > img.height:
+                continue
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for old in out_dir.glob("*.png"):
+                old.unlink()
+            for i in range(count):
+                col, row = i % line_length, i // line_length
+                box = (x0 + col * var_px, y0 + row * var_px, x0 + (col + 1) * var_px, y0 + (row + 1) * var_px)
+                cell = img.crop(box).resize((var_tiles * TILE_PX, var_tiles * TILE_PX), Image.LANCZOS)
+                cell.save(out_dir / f"{i}.png")
+            return {"mode": mode, "count": count, "cols": var_tiles, "rows": var_tiles}
+    return None
+
+
+def crop_tile_sprites(raw: dict, tile_names: list[str], force: bool = False) -> dict:
+    """Режет текстуры плиток из дампа профиля (только перечисленные имена) в
+    общее хранилище tile_sprites/. Те, у кого извлечь не удалось, в карту не
+    попадают — фронт рисует их однотонной заливкой mapColor."""
+    map_path = tile_sprite_map_path()
+    existing: dict = {}
+    if map_path.exists():
+        try:
+            existing = json.loads(map_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    processed, skipped, failed = 0, 0, []
+    for name in tile_names:
+        raw_tile = raw.get("tile", {}).get(name)
+        out_dir = tile_sprites_dir() / name
+        if not raw_tile:
+            continue
+        if name in existing and not force and out_dir.exists():
+            skipped += 1
+            continue
+        try:
+            info = _crop_tile_variants(raw_tile, out_dir)
+        except Exception as e:  # noqa: BLE001 — одна плитка не должна ронять сборку
+            failed.append(f"{name}: {e}")
+            continue
+        if info is None:
+            failed.append(f"{name}: текстура не найдена/не распознана")
+            existing.pop(name, None)
+            continue
+        existing[name] = info
+        processed += 1
+    map_path.parent.mkdir(parents=True, exist_ok=True)
+    map_path.write_text(json.dumps(existing, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"processed": processed, "skipped": skipped, "failed": failed, "total_in_store": len(existing)}

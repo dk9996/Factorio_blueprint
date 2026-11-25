@@ -19,7 +19,11 @@ export function buildPlacingGroup(
     craftingCategories: i.craftingCategories,
     moduleSlots: i.moduleSlots,
     recipe: i.recipe,
+    quality: i.quality,
+    recipeQuality: i.recipeQuality,
     modules: i.modules,
+    moduleExtra: i.moduleExtra,
+    controlBehavior: i.controlBehavior,
     extra: i.extra,
   }))
 }

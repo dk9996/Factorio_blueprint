@@ -6,16 +6,22 @@ import type { CatalogEntity } from '../../store/entityCatalogStore'
 import { useFactoryStore } from '../../store/factoryStore'
 import { useUiStore } from '../../store/uiStore'
 import { useTabsStore } from '../../store/tabsStore'
+import { useProjectsStore } from '../../store/projectsStore'
 import { encodeBlueprintString } from '../../lib/blueprint/encode'
 import {
   entitiesToBlueprintData,
   importBlueprintString,
   tabsToBlueprintBookData,
+  type ImportBlueprintStringResult,
 } from '../../lib/blueprint/convert'
 import { BlueprintFormatError } from '../../lib/blueprint/errors'
 import { unpackVersion } from '../../lib/blueprint/version'
 import { normalizeEntities } from '../../lib/blueprint/boundingBox'
 import { buildPlacingGroup } from '../../lib/clipboard/buildPlacingGroup'
+import { hasTiles } from '../../lib/tiles'
+import { entitiesApi } from '../../lib/api/entities'
+import { resolveDlcUpgradeProfile } from '../../lib/content/importDlcPrompt'
+import { ensureCatalogForProfile } from '../../lib/projects/projectSession'
 import { SaveFactoryModal } from './SaveFactoryModal'
 
 type Mode = 'import' | 'export' | 'save' | null
@@ -31,6 +37,14 @@ function summarizeSkipped(names: string[]): { name: string; count: number }[] {
   const counts = new Map<string, number>()
   for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1)
   return Array.from(counts.entries()).map(([name, count]) => ({ name, count }))
+}
+
+interface PendingDlcChoice {
+  raw: string
+  skippedNames: string[]
+  skippedBookEntries: string[]
+  profileId: string
+  label: string
 }
 
 export function ImportExportPanel() {
@@ -66,9 +80,14 @@ export function ImportExportPanel() {
   const [dragOver, setDragOver] = useState(false)
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null)
   const [exportVersionLabel, setExportVersionLabel] = useState<string | null>(null)
+  const [pendingChoice, setPendingChoice] = useState<PendingDlcChoice | null>(null)
+  const [originMap, setOriginMap] = useState<Record<string, string> | null>(null)
+  const [switchingProfile, setSwitchingProfile] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const entities = useCanvasStore((s) => s.entities)
+  const tiles = useCanvasStore((s) => s.tiles)
+  const wires = useCanvasStore((s) => s.wires)
   const setPlacing = useCanvasStore((s) => s.setPlacing)
   const catalog = useEntityCatalogStore((s) => s.entities)
   const selectedEntityIds = useUiStore((s) => s.selectedEntityIds)
@@ -78,12 +97,62 @@ export function ImportExportPanel() {
     () => new Map<string, CatalogEntity>(catalog.map((c) => [c.typeId, c])),
     [catalog],
   )
+  // Имена модулей профиля — чтобы при импорте отличать модули в items от
+  // остального (топливо и т.п.), см. lib/blueprint/modules.ts.
+  const catalogModules = useEntityCatalogStore((s) => s.modules)
+  const moduleNames = useMemo(() => new Set(catalogModules.map((m) => m.name)), [catalogModules])
+  // Профиль с DLC quality — только тогда качество пишется в чертёж.
+  const includeQuality = useEntityCatalogStore((s) => s.qualities.length > 0)
+  const freshModuleNames = () => new Set(useEntityCatalogStore.getState().modules.map((m) => m.name))
 
   function openImport() {
     setText('')
     setError(null)
     setImportSummary(null)
+    setPendingChoice(null)
     setMode('import')
+    // Карта typeId->профиль для подсказки "включить DLC" — грузим лениво
+    // при первом открытии диалога, кэшируем на весь жизненный цикл панели
+    // (не меняется в рамках одной сессии редактора).
+    if (!originMap) {
+      entitiesApi.profileOrigin().then(setOriginMap).catch(() => setOriginMap({}))
+    }
+  }
+
+  // Профиль только РАСШИРЯЕТСЯ (новые паки добавляются к уже включённым в
+  // ТЕКУЩЕМ проекте, см. resolveDlcUpgradeProfile) — ранее размещённые
+  // сущности никогда не перестанут резолвиться, поэтому предупреждение
+  // "сколько исчезнет" (как при смене профиля в настройках проекта) здесь
+  // не нужно.
+  async function handleEnableDlcAndImport() {
+    if (!pendingChoice) return
+    const projectId = useUiStore.getState().activeProjectId
+    if (!projectId) return
+    setSwitchingProfile(true)
+    try {
+      await useProjectsStore.getState().changeContentProfile(projectId, pendingChoice.profileId)
+      await ensureCatalogForProfile(pendingChoice.profileId)
+      const freshCatalog = useEntityCatalogStore.getState().entities
+      const freshMap = new Map<string, CatalogEntity>(freshCatalog.map((c) => [c.typeId, c]))
+      const result = importBlueprintString(pendingChoice.raw, freshMap, freshModuleNames())
+      setPendingChoice(null)
+      commitImport(result)
+    } catch (err) {
+      setError(err instanceof BlueprintFormatError ? err.message : 'Не удалось включить DLC')
+    } finally {
+      setSwitchingProfile(false)
+    }
+  }
+
+  function handleImportAnyway() {
+    if (!pendingChoice) return
+    const { raw } = pendingChoice
+    setPendingChoice(null)
+    try {
+      commitImport(importBlueprintString(raw, catalogByTypeId, moduleNames))
+    } catch (err) {
+      setError(err instanceof BlueprintFormatError ? err.message : 'Не удалось прочитать строку чертежа')
+    }
   }
 
   function openExport() {
@@ -100,7 +169,16 @@ export function ImportExportPanel() {
       // произвольного подмножества (выделение) они не имеют смысла.
       const meta = hasSelection ? undefined : activeTab?.blueprintMeta
       const label = meta?.label ?? activeTab?.title ?? 'Чертёж из Factory Planner'
-      const { data, version } = entitiesToBlueprintData(source, { label, meta, catalogByTypeId })
+      const { data, version } = entitiesToBlueprintData(source, {
+        label,
+        meta,
+        catalogByTypeId,
+        includeQuality,
+        // слой плиток — только при экспорте вкладки целиком (не выделения)
+        tiles: hasSelection ? undefined : tiles,
+        // провода — между экспортируемыми сущностями (концы вне набора отбрасываются)
+        wires,
+      })
       const encoded = encodeBlueprintString({ blueprint: data })
       setText(encoded)
       setExportVersionLabel(formatVersion(version))
@@ -115,17 +193,18 @@ export function ImportExportPanel() {
 
   function openExportAllTabs() {
     try {
-      const effectiveTabs = allTabs.map((t) => (t.id === activeTabId ? { ...t, entities } : t))
-      const nonEmpty = effectiveTabs.filter((t) => t.entities.length > 0)
+      const effectiveTabs = allTabs.map((t) => (t.id === activeTabId ? { ...t, entities, tiles, wires } : t))
+      const nonEmpty = effectiveTabs.filter((t) => t.entities.length > 0 || hasTiles(t.tiles))
       if (nonEmpty.length === 0) {
         setError('Все вкладки пусты — нечего экспортировать')
         setMode('export')
         return
       }
       const { data, version } = tabsToBlueprintBookData(
-        nonEmpty.map((t) => ({ title: t.title, entities: t.entities, meta: t.blueprintMeta })),
+        nonEmpty.map((t) => ({ title: t.title, entities: t.entities, meta: t.blueprintMeta, tiles: t.tiles ?? {}, wires: t.wires ?? [] })),
         catalogByTypeId,
         'Factory Planner — все вкладки',
+        includeQuality,
       )
       const encoded = encodeBlueprintString({ blueprint_book: data })
       setText(encoded)
@@ -144,27 +223,55 @@ export function ImportExportPanel() {
     setMode('save')
   }
 
+  function commitImport(result: ImportBlueprintStringResult) {
+    let entitiesImported = 0
+    for (const tab of result.tabs) {
+      openBlueprintTab(tab.title, tab.result.entities, tab.result.nextId, tab.result.meta, tab.result.tiles, tab.result.wires)
+      entitiesImported += tab.result.entities.length
+    }
+    setImportSummary({
+      tabsCreated: result.tabs.length,
+      entitiesImported,
+      skipped: summarizeSkipped(result.skippedNames),
+      skippedBookEntries: result.skippedBookEntries,
+    })
+    setError(null)
+  }
+
+  // Если среди пропущенных сущностей есть такие, что существуют в другом
+  // профиле контента текущего проекта — не коммитим вкладки сразу с
+  // неполным набором, а сперва предлагаем выбор (см.
+  // lib/content/importDlcPrompt.ts): включить DLC и импортировать заново
+  // уже полностью, или продолжить как есть. Иначе (обычный случай без
+  // DLC-сущностей) поведение не меняется — коммит сразу, одним кликом.
   function runImport(raw: string) {
     try {
-      const result = importBlueprintString(raw, catalogByTypeId)
+      const result = importBlueprintString(raw, catalogByTypeId, moduleNames)
       if (result.tabs.length === 0) {
         setError('Чертёж распознан, но не содержит ни одной сущности')
         return
       }
-
-      let entitiesImported = 0
-      for (const tab of result.tabs) {
-        openBlueprintTab(tab.title, tab.result.entities, tab.result.nextId, tab.result.meta)
-        entitiesImported += tab.result.entities.length
+      if (result.skippedNames.length > 0 && originMap) {
+        const projectId = useUiStore.getState().activeProjectId
+        const project = projectId
+          ? useProjectsStore.getState().projects.find((p) => p.id === projectId)
+          : null
+        const offer = project
+          ? resolveDlcUpgradeProfile(result.skippedNames, originMap, project.content_profile)
+          : null
+        if (offer) {
+          setPendingChoice({
+            raw,
+            skippedNames: result.skippedNames,
+            skippedBookEntries: result.skippedBookEntries,
+            profileId: offer.profileId,
+            label: offer.label,
+          })
+          setError(null)
+          return
+        }
       }
-
-      setImportSummary({
-        tabsCreated: result.tabs.length,
-        entitiesImported,
-        skipped: summarizeSkipped(result.skippedNames),
-        skippedBookEntries: result.skippedBookEntries,
-      })
-      setError(null)
+      commitImport(result)
     } catch (err) {
       setError(err instanceof BlueprintFormatError ? err.message : 'Не удалось прочитать строку чертежа')
     }
@@ -172,7 +279,7 @@ export function ImportExportPanel() {
 
   function runImportAsGhost(raw: string) {
     try {
-      const result = importBlueprintString(raw, catalogByTypeId)
+      const result = importBlueprintString(raw, catalogByTypeId, moduleNames)
       if (result.tabs.length !== 1) {
         setError('Вставка призраком доступна только для одного чертежа (не книги с несколькими)')
         return
@@ -367,6 +474,23 @@ export function ImportExportPanel() {
               )}
 
               {error && <div className="ie-error">{error}</div>}
+
+              {pendingChoice && (
+                <div className="ie-summary">
+                  <div className="ie-summary-title">
+                    {pendingChoice.skippedNames.length} сущностей отсутствуют в текущем профиле проекта,
+                    но есть в {pendingChoice.label}
+                  </div>
+                  <div className="ie-dlc-offer">
+                    <button className="ie-btn primary" onClick={handleEnableDlcAndImport} disabled={switchingProfile}>
+                      {switchingProfile ? 'Включаю…' : `Включить ${pendingChoice.label} и импортировать`}
+                    </button>
+                    <button className="ie-btn" onClick={handleImportAnyway} disabled={switchingProfile}>
+                      Импортировать как есть (без них)
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {importSummary && (
                 <div className="ie-summary">

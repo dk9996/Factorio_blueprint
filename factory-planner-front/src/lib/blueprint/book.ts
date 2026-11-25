@@ -49,7 +49,7 @@ export function parseTopLevel(json: unknown): ParsedTopLevel {
   }
 
   if (isRecord(json.blueprint)) {
-    const data = json.blueprint as BlueprintData
+    const data = json.blueprint as unknown as BlueprintData
     return {
       blueprints: [{ label: data.label || 'Чертёж', data }],
       skippedBookEntries: [],
@@ -58,7 +58,7 @@ export function parseTopLevel(json: unknown): ParsedTopLevel {
 
   if (isRecord(json.blueprint_book)) {
     const skippedBookEntries: string[] = []
-    const blueprints = flattenBook(json.blueprint_book as BlueprintBookData, skippedBookEntries)
+    const blueprints = flattenBook(json.blueprint_book as unknown as BlueprintBookData, skippedBookEntries)
     return { blueprints, skippedBookEntries }
   }
 
